@@ -259,8 +259,9 @@ v0.4.5 新增
   src/research_agent/logging/{__init__,proxy}.py                  统一事件日志（词表/脱敏/trace/tail）
   src/research_agent/writing/node_registry.py                    节点能力登记表（13 节点 12 任务）
   src/research_agent/writing/dispatch.py                         派工协议（幂等/取消/收敛/逐步回报）
+  src/research_agent/writing/dispatch_planner.py                 自然语言 → 可执行派工方案
   docs/{LOGGING.md,CHANGELOG_v0.4.4_v0.4.5.md}
-  tests/{test_logging,test_dispatch}.py
+  tests/{test_logging,test_dispatch,test_dispatch_planner}.py
 改动
   src/research_agent/db.py                 +4 张侧车表 +3 张写作表 +dispatch_runs（含 FK/CASCADE/索引）
   src/research_agent/config.py             +节级工作流阈值（RA_SECTION_*）
@@ -341,13 +342,14 @@ uv run python scripts/verify_section_flow.py --base http://127.0.0.1:8000
 | `test_section_templates.py` | 30 | **两套模板与工作规划**：模板完整性、维度按部分区分、系统自拟与用户模式、字段来源（user/plan/template）与纯并行优先级、同一库不同结论、带缺口写作与标注幂等、轨迹记录模板 |
 | `test_logging.py` | **26** | **统一日志**：事件词表受控、脱敏与截断、trace 关联、环形缓冲过滤、`LoggedModel` 代理记账与失败现场、`/api/log` 白名单与 trace 透传 |
 | `test_dispatch.py` | **24** | **派工协议**：登记项全部有实现、幂等（同单号只跑一次、失败可重跑）、取消、`$stepN` 引用串联与不可解析时跳过、进度上报、预算与步数上限、长正文摘要化 |
+| `test_dispatch_planner.py` | **25** | **自然语言派工**：意图识别（中英）、方案随意图分族、只认登记表任务（模型编的任务名被丢弃）、`skip_reason` 语义（用户点名的保留、自动追加的删掉）、项目上下文与 `project_id` 注入、离线不碰网络、结果可直接下单 |
 | `test_frontend_assets.py` | 18 | 资源存在、**相对导入可解析**、注册表一致性、转义策略+自检、PWA 令牌一致、**前端接口与后端路由逐一配对** |
 | `test_migration.py` | 10 | dry-run 不写库、apply 齐全、幂等、状态映射、质量分换算、溯源 |
-| **单元测试合计** | **378** | `OK` |
+| **单元测试合计** | **403** | `OK` |
 | `frontend_smoke.mjs` | 47 | 真实 import 全部模块、调用 `mount()`、校验 9 页契约与注册表 |
-| `check_frontend_routes.py` | 54 处调用 | 前端接口 ↔ 后端 62 条 `/api` 路由逐一配对（错配只会在点击时 404） |
+| `check_frontend_routes.py` | 56 处调用 | 前端接口 ↔ 后端 63 条 `/api` 路由逐一配对（错配只会在点击时 404） |
 | `smoke_dashboard.py` | 139 | 真实 HTTP：新端点 + **工作规划/模板/带缺口写作** + 节点工作流全链路 + 静态资源 + **旧端点无回归** |
-| `browser_smoke.mjs` | **33** | **真实浏览器（Playwright + 本机 Edge）**：写作台问答全链路 + 研究流程页（访谈节点在清单、诚实的「未执行」、派工板、分组筛选与详情在重渲染后仍可点）+ 无页面异常/无 4xx/无 console.error |
+| `browser_smoke.mjs` | **36** | **真实浏览器（Playwright + 本机 Edge）**：写作台问答全链路 + 对节点下指令（解析→选方案→下单）+ 研究流程页（访谈节点在清单、诚实的「未执行」、派工板、分组筛选与详情在重渲染后仍可点）+ 无页面异常/无 4xx/无 console.error |
 | `verify_section_flow.py` | 人工核对 | 在**正在运行的库**上跑一遍并打印判定/轨迹/正文，用于肉眼确认界面所见 |
 
 ---
@@ -380,10 +382,10 @@ uv run python scripts/verify_section_flow.py --base http://127.0.0.1:8000
    `writing_projects/sections`（字段差异大）未迁移。
 7. **动态本体页的图谱上限**：仍受 `/api/ontology` 的 `limit` 影响，超出时页面会明确提示
    "已按 limit 截断"，可用类型/置信度/域筛选收窄。
-8. **自然语言派工尚未接通（v0.4.5）**：派工执行器（`writing/dispatch.py`）与
-   `GET/POST /api/dispatches` 已就绪，登记表也齐了；但"用户在访谈里直接对某节点
-   下自然语言指令 → 解析成派工单"这一入口还没做，因此目前派工的实际来源仍是
-   写作台的缺口决定（保留缺口 / 检索补全 / 自定义任务）。
+8. ~~**自然语言派工尚未接通**~~ → **已完成（v0.4.5）**：`writing/dispatch_planner.py`
+   ＋ `POST /api/dispatches/parse` ＋ 写作台的「对节点下指令」面板，让"用你自己的话
+   下指令"变成三份可执行方案（只认登记表里的任务，模型编出的任务名会被丢掉）。
+   派工来源因此有三条，共用一条执行链：缺口决定 / 自定义任务 / 用户直下指令。
 9. **检索源限流与查询构造未处理**：OpenAlex 对"引号 + 通配"的查询会返回
    `400 Bad Request`，Semantic Scholar 会 `429`。目前只是**如实记录错误**
    （`dispatch.step` 的 `errors` 字段与统一日志都能看到），没有退避重试或
