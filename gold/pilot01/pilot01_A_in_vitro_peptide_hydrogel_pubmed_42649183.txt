@@ -1,0 +1,16 @@
+【金标准试点语料 · 01-A】
+paper_key        : pubmed:42649183
+title            : An agent-guided peptide hydrogel bio-stabilizer clamps pericellular viscoelastic drift.
+venue            : Nature communications
+pub_year         : 2026
+fulltext_source  : abstract
+建议类型标签      : 材料 + 体外(in vitro)
+
+---- 精校重排文本（待标注原文）----
+Living tissues continually remodel the extracellular matrix, causing pericellular mechanics to drift over time. Chronic glycation amplifies this drift, destabilizing mechanoregulatory cues and compromising regenerative outcomes. Here we introduce Micro-Mechanical Homeostasis Reset, a material-based strategy that targets cell-to-pericellular viscoelastic homeostasis rather than static bulk stiffness. Using an agent-guided, rule-based enumeration-and-scoring workflow, we design ViscoClamp, an extracellular matrix-interpenetrating peptide hydrogel with affinity for calcium ions and advanced glycation end products. We show that ViscoClamp buffers chronic glycation loading and constrains glycation-driven viscoelastic drift, while remaining permissive to mesenchymal stem cell-mediated matrix remodeling and mineralization. We quantify stabilization using a dispersion-transfer ratio that measures how variable glycation inputs are compressed into stable micromechanical outputs. We demonstrate that in glycation-rich hyperglycemic craniofacial defects, ViscoClamp stabilizes cell-scale micromechanics, restores osteogenic activation, and improves bone repair and mineralization in rats, rabbits, beagle dogs, and rhesus macaques.
+
+---- 标注说明 ----
+1) 仅依据上方原文进行实体/关系/事件/属性标注；
+2) evidence 必须引用本文件中的原句（可节选，≤300 字符）；
+3) 本文件不含任何模型抽取结果，请勿参考外部模型输出；
+4) 完整规则见 docs/gold_standard_guide.md。

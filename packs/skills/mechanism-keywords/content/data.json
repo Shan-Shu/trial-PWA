@@ -1,0 +1,143 @@
+{
+  "name": "mechanism-keywords",
+  "description": "机制/条件词表与触发式抽取规则；领域可用 vocab/mechanism.jsonl 覆盖或扩展",
+  "mechanism_keywords": [
+    "intermediate",
+    "cation",
+    "anion",
+    "carbene",
+    "nitrene",
+    "radical",
+    "umpolung",
+    "dearomat",
+    "rearrang",
+    "migrat",
+    "insertion",
+    "cyclization",
+    "cyclisation",
+    "annulation",
+    "cascade",
+    "tandem",
+    "activation",
+    "oxidat",
+    "reduct",
+    "eliminat",
+    "coordinat",
+    "ligand",
+    "enantio",
+    "diastereo",
+    "regio",
+    "chemoselect",
+    "transition state",
+    "mechanism",
+    "catalytic cycle",
+    "bond formation",
+    "bond cleavage",
+    "polarity",
+    "vinyl",
+    "propargyl"
+  ],
+  "low_value_relation_labels": [
+    "authored_by",
+    "cites",
+    "developed_by",
+    "is_a",
+    "made_of",
+    "part_of",
+    "published_in",
+    "related_to",
+    "used_in"
+  ],
+  "operator_keywords": {
+    "polarity_reversal": [
+      "umpolung",
+      "polarity",
+      "polarity reversal",
+      "nucleophilic",
+      "d3",
+      "acyl anion"
+    ],
+    "dearomatization": [
+      "dearomat",
+      "dearomative",
+      "rearomat"
+    ],
+    "strain_release": [
+      "strain",
+      "bicyclobutane",
+      "cyclopropane",
+      "ring strain"
+    ],
+    "transient_directing": [
+      "transient",
+      "reversible",
+      "hemilabile"
+    ],
+    "carbene_migration": [
+      "carbene",
+      "migration",
+      "doyle",
+      "kirmse"
+    ],
+    "radical_polar_crossover": [
+      "radical",
+      "polar crossover",
+      "set ",
+      "photoredox"
+    ],
+    "dual_catalysis_relay": [
+      "dual catalyst",
+      "relay",
+      "cooperative catalys",
+      "bimetallic"
+    ],
+    "selectivity_lock": [
+      "enantio",
+      "diastereo",
+      "regio",
+      "chiral",
+      "atropisomer"
+    ],
+    "intermediate_capture": [
+      "intermediate",
+      "trapping",
+      "trap",
+      "capture"
+    ],
+    "ring_contraction_expansion": [
+      "ring contraction",
+      "ring expansion",
+      "ring-opening",
+      "ring opening"
+    ],
+    "bond_migration": [
+      "migration",
+      "shift",
+      "1,2-",
+      "1,3-"
+    ],
+    "heteroatom_insertion": [
+      "insertion",
+      "nitrogen transfer",
+      "amination",
+      "sulfonylation"
+    ],
+    "dynamic_kinetic_resolution": [
+      "dynamic kinetic",
+      "dkr",
+      "racemization"
+    ],
+    "switchable_valence": [
+      "switchable",
+      "valence",
+      "au(i)/au(iii)",
+      "redox switch"
+    ],
+    "cascade_termination": [
+      "cascade",
+      "tandem",
+      "termination",
+      "interrupted"
+    ]
+  }
+}

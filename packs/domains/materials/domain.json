@@ -1,0 +1,46 @@
+{
+  "kind": "materials",
+  "keywords": [
+    "材料",
+    "支架",
+    "涂层",
+    "力学",
+    "生物材料",
+    "工艺",
+    "composite",
+    "scaffold",
+    "material"
+  ],
+  "profile": {
+    "label": "材料/工程",
+    "dimensions": [
+      "材料组成",
+      "制备工艺",
+      "结构与形貌",
+      "力学性能",
+      "功能性能",
+      "稳定性",
+      "应用场景"
+    ],
+    "candidate_entity_types": [
+      "Material",
+      "Device",
+      "Method",
+      "Process",
+      "Property",
+      "Metric",
+      "Application",
+      "Chemical"
+    ],
+    "candidate_relation_types": [
+      "made_of",
+      "part_of",
+      "uses",
+      "enables",
+      "has_property",
+      "improves_upon",
+      "is_a",
+      "evaluates"
+    ]
+  }
+}

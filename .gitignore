@@ -1,0 +1,32 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# 虚拟环境
+.venv
+
+# 测试临时目录（受限沙箱下 tempfile 不可写时的回退位置）
+.test-tmp/
+.dsh-tmp/
+# 受限令牌创建的临时目录（ACL 限制导致无法删除，忽略之）
+/tmp????????/
+
+# 本地密钥
+.env
+.env.*
+!.env.example
+*.log
+
+# 本地数据（论文 PDF BLOB、清洗文本、动态本体数据库）
+data/
+
+# 导出/生成物（看板图谱导出、第三方 vendor 副本等）
+assets/
+output/
+
+# 会话附件（由 agent 会话上传的原始文档，不入库）
+.dsh-attachments/

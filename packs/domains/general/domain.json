@@ -1,0 +1,37 @@
+{
+  "kind": "general",
+  "fallback": true,
+  "keywords": [],
+  "profile": {
+    "label": "通用科研",
+    "dimensions": [
+      "核心主题",
+      "方法与技术",
+      "应用场景",
+      "机理与原理",
+      "性能与评价",
+      "变体与拓展",
+      "开放问题"
+    ],
+    "candidate_entity_types": [
+      "Concept",
+      "Method",
+      "Task",
+      "Dataset",
+      "Metric",
+      "Theory",
+      "Tool",
+      "Application"
+    ],
+    "candidate_relation_types": [
+      "uses",
+      "evaluates",
+      "based_on",
+      "part_of",
+      "improves_upon",
+      "enables",
+      "is_a",
+      "related_to"
+    ]
+  }
+}

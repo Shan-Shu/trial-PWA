@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>research-agent 科研智能体工作台</title>
+  <link rel="stylesheet" href="/static/css/theme.css" />
+  <link rel="stylesheet" href="/static/css/shell.css" />
+</head>
+<body>
+  <div class="app">
+    <!-- 左侧页面导航（PWA 形态） -->
+    <aside class="sidebar">
+      <div class="brand">
+        <span class="logo">◆</span>
+        <div>
+          <div class="title">research-agent</div>
+          <div class="ver">科研智能体工作台</div>
+        </div>
+      </div>
+      <nav id="nav"></nav>
+      <div class="sidebar-foot">
+        <div>数据库：<b id="dbLabel">…</b></div>
+        <div>领域内容来自 packs · 无学科硬编码</div>
+      </div>
+    </aside>
+
+    <!-- 主区 -->
+    <main class="main-col">
+      <header class="topbar">
+        <div>
+          <div class="page-title" id="pageTitle">总览</div>
+          <div class="page-sub" id="pageSub">…</div>
+        </div>
+        <div class="spacer"></div>
+        <label class="db-switch">数据库
+          <select id="dbSelect" title="切换数据库"></select>
+        </label>
+        <label class="switch">
+          <input type="checkbox" id="autoRefresh" checked />
+          <span>自动刷新 6s</span>
+        </label>
+        <span class="muted" style="font-size:11.5px">刷新于 <b id="lastRefresh">-</b></span>
+        <button class="btn small primary" id="refreshBtn">⟳ 刷新</button>
+      </header>
+
+      <section class="page" id="pageHost"></section>
+    </main>
+  </div>
+
+  <div id="toast" class="toast hidden"></div>
+
+  <!-- vis-network 只被「动态本体」页使用，仍本地化以避免外网依赖 -->
+  <script src="/static/vendor/vis-network.min.js"></script>
+  <script type="module" src="/static/js/app.js"></script>
+</body>
+</html>

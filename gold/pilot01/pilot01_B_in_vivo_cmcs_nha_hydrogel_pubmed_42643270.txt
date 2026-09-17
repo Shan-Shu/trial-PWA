@@ -1,0 +1,16 @@
+【金标准试点语料 · 01-B】
+paper_key        : pubmed:42643270
+title            : Biofunctional carboxymethyl chitosan hydrogels with nano-hydroxyapatite gradients accelerate bone defect healing.
+venue            : iScience
+pub_year         : 2026
+fulltext_source  : abstract
+建议类型标签      : 材料 + 动物模型(in vivo)
+
+---- 精校重排文本（待标注原文）----
+Large bone defects remain a clinical challenge due to limited regenerative capacity. In this study, carboxymethyl chitosan (CMCS) hydrogels incorporating gradient nano-hydroxyapatite (nHA) were developed to enhance bone repair. The composite hydrogels exhibited improved mechanical properties, controlled degradation, and good biocompatibility. In vitro, nHA-containing hydrogels promoted bone marrow mesenchymal stem cell (BMSC) proliferation and osteogenic differentiation, as shown by increased alkaline phosphatase (ALP) activity, mineralization, and upregulation of runt-related transcription factor 2 (RUNX2), osteocalcin (OCN), and bone morphogenetic protein-2 (BMP-2). In vivo, implantation in a rat distal femoral condyle defect model showed enhanced new bone formation and improved trabecular structure, particularly in the 1% nHA group. These results suggest that gradient nHA-loaded CMCS hydrogels can effectively enhance osteogenesis and support bone regeneration.
+
+---- 标注说明 ----
+1) 仅依据上方原文进行实体/关系/事件/属性标注；
+2) evidence 必须引用本文件中的原句（可节选，≤300 字符）；
+3) 本文件不含任何模型抽取结果，请勿参考外部模型输出；
+4) 完整规则见 docs/gold_standard_guide.md。

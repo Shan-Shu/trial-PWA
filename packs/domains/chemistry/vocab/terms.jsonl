@@ -1,0 +1,15 @@
+{"term": "water", "id": "CHEBI:15377", "canonical": "water", "aliases": ["H2O", "oxidane", "dihydrogen oxide"], "source": "ChEBI"}
+{"term": "hydrogen peroxide", "id": "CHEBI:16240", "canonical": "hydrogen peroxide", "aliases": ["H2O2", "dioxidane"], "source": "ChEBI"}
+{"term": "dioxygen", "id": "CHEBI:15379", "canonical": "dioxygen", "aliases": ["O2", "molecular oxygen"], "source": "ChEBI"}
+{"term": "carbon dioxide", "id": "CHEBI:16526", "canonical": "carbon dioxide", "aliases": ["CO2"], "source": "ChEBI"}
+{"term": "methanol", "id": "CHEBI:17790", "canonical": "methanol", "aliases": ["CH3OH", "methyl alcohol", "methyl hydroxide"], "source": "ChEBI"}
+{"term": "ethanol", "id": "CHEBI:16236", "canonical": "ethanol", "aliases": ["CH3CH2OH", "ethyl alcohol"], "source": "ChEBI"}
+{"term": "ammonia", "id": "CHEBI:16134", "canonical": "ammonia", "aliases": ["NH3"], "source": "ChEBI"}
+{"term": "sodium chloride", "id": "CHEBI:26710", "canonical": "sodium chloride", "aliases": ["NaCl"], "source": "ChEBI"}
+{"term": "annulation", "id": "annulation", "canonical": "annulation", "aliases": ["annulation reaction", "annulative"], "source": "IUPAC Gold Book"}
+{"term": "catalysis", "id": "catalysis", "canonical": "catalysis", "aliases": ["catalytic process", "catalytic reaction"], "source": "IUPAC Gold Book"}
+{"term": "chemoselectivity", "id": "chemoselectivity", "canonical": "chemoselectivity", "aliases": ["chemoselective"], "source": "IUPAC Gold Book"}
+{"term": "regioselectivity", "id": "regioselectivity", "canonical": "regioselectivity", "aliases": ["regioselective", "regiospecificity"], "source": "IUPAC Gold Book"}
+{"term": "stereoselectivity", "id": "stereoselectivity", "canonical": "stereoselectivity", "aliases": ["stereoselective", "stereospecificity"], "source": "IUPAC Gold Book"}
+{"term": "electrophile", "id": "electrophile", "canonical": "electrophile", "aliases": ["electrophilic reagent", "electrophilic species"], "source": "IUPAC Gold Book"}
+{"term": "nucleophile", "id": "nucleophile", "canonical": "nucleophile", "aliases": ["nucleophilic reagent", "nucleophilic species"], "source": "IUPAC Gold Book"}

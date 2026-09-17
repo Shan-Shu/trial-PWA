@@ -1,0 +1,175 @@
+/* ============================================================================
+ * PWA 视觉规范 —— 令牌与基线
+ * 来源：paper_writing_assistant 的 ui/app.py::_inject_css（内联 CSS）
+ * 说明：合并后前端的皮肤以此为准；trial 原有的深色看板样式不再主导。
+ * ========================================================================== */
+
+:root {
+  /* 背景层级（PWA 原值） */
+  --bg-deep: #0A0E1A;
+  --bg-side: #0F1629;
+  --bg-card: #162040;
+  --bg-hover: #1E2A4A;
+  --bg-active: #263456;
+
+  /* 文本层级 */
+  --text-main: #E8ECF4;
+  --text-sub: #A0AEC8;
+  --text-muted: #6B7A9E;
+
+  /* 描边 */
+  --border: #1E2A4A;
+  --border-strong: #2D3A5C;
+
+  /* 语义色 */
+  --accent: #3B82F6;
+  --accent-hover: #2563EB;
+  --cyan: #06B6D4;
+  --green: #10B981;
+  --amber: #F59E0B;
+  --red: #EF4444;
+  --violet: #8B5CF6;
+
+  /* 旧变量别名：保持既有 style.css 与内联样式不失效 */
+  --bg: var(--bg-deep);
+  --panel: var(--bg-side);
+  --panel2: var(--bg-card);
+  --text: var(--text-main);
+  --muted: var(--text-muted);
+  --blue: var(--accent);
+  --orange: var(--amber);
+
+  /* 几何 */
+  --radius: 12px;
+  --radius-sm: 8px;
+  --shadow-card: 0 8px 20px rgba(0, 0, 0, 0.18);
+  --shadow-pop: 0 12px 32px rgba(0, 0, 0, 0.35);
+  --sidebar-w: 232px;
+  --topbar-h: 60px;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  padding: 0;
+  background: var(--bg-deep);
+  color: var(--text-main);
+  font-family: "Inter", "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
+  font-size: 14px;
+  line-height: 1.55;
+}
+
+/* 背景：PWA 的三点径向光晕 + 线性渐变 + 网格纹理 */
+body {
+  background:
+    radial-gradient(circle at 12% 12%, rgba(59, 130, 246, 0.08), transparent 28%),
+    radial-gradient(circle at 88% 18%, rgba(139, 92, 246, 0.06), transparent 30%),
+    radial-gradient(circle at 72% 88%, rgba(6, 182, 212, 0.05), transparent 28%),
+    linear-gradient(135deg, #0A0E1A 0%, #0E1628 52%, #0A0E1A 100%);
+  background-attachment: fixed;
+}
+
+body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 0;
+  background-image:
+    linear-gradient(rgba(59, 130, 246, 0.025) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(59, 130, 246, 0.025) 1px, transparent 1px);
+  background-size: 48px 48px;
+  mask-image: radial-gradient(circle at 50% 30%, rgba(0, 0, 0, 0.6), transparent 75%);
+}
+
+h1, h2, h3, h4, h5 { color: var(--text-main); margin: 0 0 10px; font-weight: 650; }
+h1 { font-size: 20px; }
+h2 { font-size: 16px; }
+h3 { font-size: 14px; }
+h4 { font-size: 13px; }
+
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+code, pre {
+  font-family: "JetBrains Mono", "Cascadia Code", Consolas, monospace;
+  font-size: 12px;
+}
+
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-track { background: var(--bg-deep); }
+::-webkit-scrollbar-thumb {
+  background: var(--border-strong);
+  border-radius: 6px;
+  border: 2px solid var(--bg-deep);
+}
+::-webkit-scrollbar-thumb:hover { background: var(--bg-hover); }
+
+/* 表单基线 */
+input, select, textarea, button { font-family: inherit; font-size: 13px; }
+
+input[type="text"], input[type="search"], input[type="number"],
+select, textarea {
+  background: var(--bg-card);
+  border: 1px solid var(--border-strong);
+  color: var(--text-main);
+  border-radius: var(--radius-sm);
+  padding: 7px 10px;
+  outline: none;
+  transition: border-color 120ms ease, background 120ms ease;
+}
+
+input:focus, select:focus, textarea:focus {
+  border-color: var(--accent);
+  background: var(--bg-hover);
+}
+
+input::placeholder, textarea::placeholder { color: var(--text-muted); }
+
+select option { background: var(--bg-side); color: var(--text-main); }
+
+textarea { resize: vertical; line-height: 1.6; }
+
+/* 按钮 */
+.btn {
+  background: var(--bg-card);
+  border: 1px solid var(--border-strong);
+  color: var(--text-main);
+  border-radius: var(--radius-sm);
+  padding: 7px 12px;
+  cursor: pointer;
+  transition: all 110ms ease;
+  white-space: nowrap;
+}
+.btn:hover {
+  background: var(--bg-hover);
+  border-color: var(--accent);
+  transform: translateY(-1px);
+}
+.btn:disabled { opacity: .5; cursor: not-allowed; transform: none; }
+.btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+.btn.primary:hover { background: var(--accent-hover); border-color: var(--accent-hover); }
+.btn.ghost { background: transparent; color: var(--text-sub); }
+.btn.ghost:hover { color: #fff; background: var(--bg-hover); }
+.btn.danger { border-color: var(--red); color: #ffb0ba; }
+.btn.danger:hover { background: rgba(239, 68, 68, .14); color: #fff; }
+.btn.small { padding: 4px 9px; font-size: 12px; }
+
+.muted { color: var(--text-muted); }
+.sub { color: var(--text-sub); }
+.hidden { display: none !important; }
+
+table { width: 100%; border-collapse: collapse; }
+th, td { padding: 8px 10px; text-align: left; border-bottom: 1px solid var(--border); }
+th {
+  color: var(--text-sub);
+  font-weight: 600;
+  font-size: 12px;
+  position: sticky;
+  top: 0;
+  background: var(--bg-side);
+  z-index: 1;
+}
+tbody tr { transition: background 100ms ease; }
+tbody tr:hover { background: var(--bg-hover); }

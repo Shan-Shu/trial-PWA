@@ -1,0 +1,228 @@
+{
+  "name": "writing",
+  "description": "论文写作体裁、章节骨架与提示词模板。合并自 paper_writing_assistant 的 writing/writer.py（其 DEFAULT_OUTLINE 硬编码 7 个中文小节），改为数据驱动：新增体裁或改语言只需改本文件。",
+  "default_genre": "research_article",
+  "genres": {
+    "research_article": {
+      "label": "研究论文",
+      "language": "zh",
+      "sections": [
+        {
+          "key": "abstract",
+          "heading": "摘要",
+          "words": 300
+        },
+        {
+          "key": "introduction",
+          "heading": "引言",
+          "words": 1200
+        },
+        {
+          "key": "methods",
+          "heading": "方法",
+          "words": 1500
+        },
+        {
+          "key": "results",
+          "heading": "结果",
+          "words": 1200
+        },
+        {
+          "key": "discussion",
+          "heading": "讨论",
+          "words": 1200
+        },
+        {
+          "key": "conclusion",
+          "heading": "结论",
+          "words": 400
+        },
+        {
+          "key": "references",
+          "heading": "参考文献",
+          "words": 0
+        }
+      ],
+      "section_notes": {
+        "introduction": "交代领域现状、已有工作缺口与本工作的定位，不堆砌文献。",
+        "methods": "给出可复现的实验/计算流程，标注条件与来源。",
+        "results": "只陈述有证据支持的观察，区分实测与推断。",
+        "discussion": "解释机制、与既有工作的关系、局限性。"
+      }
+    },
+    "frontier_review": {
+      "label": "前沿综述",
+      "language": "zh",
+      "sections": [
+        {
+          "key": "abstract",
+          "heading": "摘要",
+          "words": 300
+        },
+        {
+          "key": "scope",
+          "heading": "范围与方法",
+          "words": 600
+        },
+        {
+          "key": "landscape",
+          "heading": "研究版图与分类",
+          "words": 1500
+        },
+        {
+          "key": "mechanisms",
+          "heading": "机制与设计原则",
+          "words": 1800
+        },
+        {
+          "key": "open_questions",
+          "heading": "开放问题与机会缺口",
+          "words": 1200
+        },
+        {
+          "key": "outlook",
+          "heading": "展望",
+          "words": 600
+        },
+        {
+          "key": "references",
+          "heading": "参考文献",
+          "words": 0
+        }
+      ],
+      "section_notes": {
+        "scope": "说明检索范围、时间窗与纳入排除标准。",
+        "landscape": "按机制或设计原则分类，不做逐年罗列。",
+        "open_questions": "与本体里的 opportunity_gaps 对齐，逐条给证据状态。"
+      }
+    },
+    "experiment_protocol": {
+      "label": "实验方案",
+      "language": "zh",
+      "sections": [
+        {
+          "key": "objective",
+          "heading": "研究目标",
+          "words": 300
+        },
+        {
+          "key": "background",
+          "heading": "背景与依据",
+          "words": 600
+        },
+        {
+          "key": "design",
+          "heading": "实验设计",
+          "words": 900
+        },
+        {
+          "key": "groups",
+          "heading": "分组与对照",
+          "words": 600
+        },
+        {
+          "key": "parameters",
+          "heading": "参数与条件",
+          "words": 600
+        },
+        {
+          "key": "readouts",
+          "heading": "观察指标",
+          "words": 400
+        },
+        {
+          "key": "risks",
+          "heading": "风险与备选方案",
+          "words": 500
+        },
+        {
+          "key": "references",
+          "heading": "参考文献",
+          "words": 0
+        }
+      ],
+      "section_notes": {
+        "parameters": "逐项给出可量化条件（温度/溶剂/当量/时间等）与来源证据。",
+        "risks": "至少 2 条与条件兼容性、选择性、可放大性相关的具体风险。"
+      }
+    },
+    "grant_proposal": {
+      "label": "基金申请书",
+      "language": "zh",
+      "sections": [
+        {
+          "key": "summary",
+          "heading": "摘要",
+          "words": 400
+        },
+        {
+          "key": "significance",
+          "heading": "立项依据",
+          "words": 1500
+        },
+        {
+          "key": "objectives",
+          "heading": "研究目标与内容",
+          "words": 1200
+        },
+        {
+          "key": "approach",
+          "heading": "研究方案与技术路线",
+          "words": 1500
+        },
+        {
+          "key": "feasibility",
+          "heading": "可行性分析",
+          "words": 800
+        },
+        {
+          "key": "plan",
+          "heading": "进度安排",
+          "words": 400
+        },
+        {
+          "key": "references",
+          "heading": "参考文献",
+          "words": 0
+        }
+      ],
+      "section_notes": {
+        "feasibility": "结合本体里的机制证据与已入库实验结果说明可行性。"
+      }
+    },
+    "rebuttal": {
+      "label": "审稿回复",
+      "language": "zh",
+      "sections": [
+        {
+          "key": "summary",
+          "heading": "总体回应",
+          "words": 400
+        },
+        {
+          "key": "point_by_point",
+          "heading": "逐条回应",
+          "words": 1500
+        },
+        {
+          "key": "changes",
+          "heading": "修改清单",
+          "words": 600
+        }
+      ],
+      "section_notes": {
+        "point_by_point": "每条先复述审稿意见，再给证据与修改位置，避免情绪化表述。"
+      }
+    }
+  },
+  "prompts": {
+    "outline_system": "你是科研写作规划助手。请依据主题与体裁生成结构化大纲，只输出 JSON。",
+    "outline_user": "体裁：{genre_label}\n主题：{topic}\n可用素材摘要：\n{materials_digest}\n\n请输出 JSON：{\"sections\": [{\"key\": \"...\", \"heading\": \"...\"}]}。key 用英文小写下划线，heading 用中文。",
+    "section_system": "你是科研论文写作助手。请基于给定素材撰写一个章节草稿，只写正文，不要复述指令。",
+    "section_user": "主题：{topic}\n章节：{heading}\n写作要求：{note}\n目标字数：约 {words} 字\n素材（每条含编号，引用时请在该句末尾标注对应编号）：\n{materials}\n\n要求：\n1. 只使用素材中出现的证据；没有证据的推断必须写「（假设）」；\n2. 引用格式为 [编号]，编号必须来自上方素材；\n3. 不要编造文献、数值或结论。",
+    "polish_system": "你是学术写作润色助手。请在不改变原意、不删减引用编号的前提下改善表达、语法与逻辑，只输出润色后的正文。",
+    "polish_user": "{content}",
+    "section_compose_user": "研究主题：{topic}\n本节标题：{heading}\n该节写作要求：{note}\n用户在本节点的指令：{instruction}\n目标字数：约 {words} 字\n\n可用素材（方括号数字即引文编号，**只能引用下列编号**）：\n{materials}\n\n为什么现在可以写（充分性判定依据，仅供你判断分寸，**不要写进正文**）：\n{basis}\n\n要求：\n1. 只输出本节正文（Markdown），不要重复输出标题；\n2. 每处事实性陈述后紧跟 [编号]，编号必须来自上方素材清单；\n3. 严禁引用清单外的编号（会被判为越界引文并标红）；\n4. 没有证据的推断必须写明「（假设）」，不得编造文献、数值或结论；\n5. 用户指令中的侧重点应当体现在正文结构与措辞上。\n"
+  },
+  "citation_style": "gb7714"
+}

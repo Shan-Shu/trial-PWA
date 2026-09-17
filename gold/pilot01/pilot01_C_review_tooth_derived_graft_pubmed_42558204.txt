@@ -1,0 +1,16 @@
+【金标准试点语料 · 01-C】
+paper_key        : pubmed:42558204
+title            : Tooth-derived graft for preservation and reconstruction of orofacial bones: A comprehensive review.
+venue            : Journal of advanced periodontology & implant dentistry
+pub_year         : 2026
+fulltext_source  : abstract
+建议类型标签      : 综述(review，验证降档规则)
+
+---- 精校重排文本（待标注原文）----
+Bone loss in the craniofacial region can result from various causes, requiring grafting for restoration. Each type of bone graft has advantages and disadvantages. In recent years, an increasing number of clinical research has used extracted teeth as graft biomaterials. This study aimed to outline the use of teeth as bone graft material, describe a general protocol for producing tooth graft material, compare various manufacturing methods, and assess tooth-derived grafts relative to other bone graft materials. The review was based on electronic database searches in Scopus, PubMed, Cochrane, Web of Science, and Google Scholar, using various combinations of keywords such as "autogenous graft," "autologous graft," "human dentin," "dentin matrix," "tooth graft," "demineralized dentin matrix," and related terms applied to titles, abstracts, and keywords. Tooth-derived grafts demonstrate promising outcomes comparable to conventional bone graft materials. However, further research is necessary to standardize protocols and validate clinical applications.
+
+---- 标注说明 ----
+1) 仅依据上方原文进行实体/关系/事件/属性标注；
+2) evidence 必须引用本文件中的原句（可节选，≤300 字符）；
+3) 本文件不含任何模型抽取结果，请勿参考外部模型输出；
+4) 完整规则见 docs/gold_standard_guide.md。
