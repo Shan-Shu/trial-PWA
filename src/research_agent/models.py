@@ -44,9 +44,12 @@ ROLE_MODEL_ENV = {
     "fact_check": "FACT_CHECK_MODEL",
 }
 ROLE_MODEL_DEFAULT = {
-    "retriever": "deepseek-v4-flash",
-    "quality": "deepseek-v4-flash",
-    "knowledge": "deepseek-v4-flash",
+    # 轻量档。**注意**：这里曾写作 "deepseek-v4-flash"，该 id 在 DeepSeek 官方
+    # 账号下并不存在（实测 GET /models 只返回 deepseek-flash 与 deepseek-v4-pro），
+    # 配错会直接 404。用 RETRIEVAL_MODEL 等环境变量可覆盖。
+    "retriever": "deepseek-flash",
+    "quality": "deepseek-flash",
+    "knowledge": "deepseek-flash",
     "planner": "deepseek-v4-pro",
     "consumer": "deepseek-v4-pro",
     "content": "deepseek-v4-pro",
@@ -103,7 +106,7 @@ def build_chat_model(
         from langchain_openai import ChatOpenAI
 
         kwargs: dict[str, object] = {
-            "model": model_name or os.getenv("DEEPSEEK_MODEL", "deepseek-v4-flash"),
+            "model": model_name or os.getenv("DEEPSEEK_MODEL", "deepseek-flash"),
             "api_key": os.getenv("DEEPSEEK_API_KEY"),
             "base_url": "https://api.deepseek.com",
             "temperature": temperature,

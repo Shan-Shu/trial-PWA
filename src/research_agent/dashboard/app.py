@@ -454,7 +454,8 @@ def create_app(db_path: str | Path | None = None,
             topic=str(payload.get("topic") or ""),
             instruction=str(payload.get("instruction") or ""),
             settings=request.app.state.settings,
-            persist=bool(payload.get("persist", True)))
+            persist=bool(payload.get("persist", True)),
+            use_model=bool(payload.get("use_model", True)))
 
     @app.get("/api/writing/templates")
     def writing_templates(genre: str = "", request: Request = None) -> dict:
@@ -469,7 +470,8 @@ def create_app(db_path: str | Path | None = None,
             request.app.state.db_path, project_id, section_key,
             str(payload.get("instruction") or ""),
             settings=request.app.state.settings,
-            user_fields=payload.get("fields"))
+            user_fields=payload.get("fields"),
+            use_model=bool(payload.get("use_model", True)))
 
     @app.post("/api/writing/projects/{project_id}/sections/{section_key}/compose")
     def section_compose(project_id: int, section_key: str, request: Request,
@@ -479,7 +481,8 @@ def create_app(db_path: str | Path | None = None,
             request.app.state.db_path, project_id, section_key,
             str(payload.get("instruction") or ""),
             settings=request.app.state.settings,
-            user_fields=payload.get("fields"))
+            user_fields=payload.get("fields"),
+            use_model=bool(payload.get("use_model", True)))
 
     @app.get("/api/writing/section-jobs/{job_id}")
     def section_job(job_id: str, request: Request) -> dict:

@@ -41,14 +41,19 @@ def _open(db_path: str | Path | None = None) -> sqlite3.Connection:
 def plan_section(db_path: str | Path | None, project_id: int, section_key: str,
                  instruction: str = "",
                  settings: Any = None,
-                 user_fields: dict[str, Any] | None = None) -> dict[str, Any]:
+                 user_fields: dict[str, Any] | None = None,
+                 use_model: bool = True) -> dict[str, Any]:
     """预判本节够不够写：给出检索规划 + 当前库的充分性判定（不检索、不写正文）。
 
     指令与字段**都可选**：都不给时按工作规划与部分模板的默认值判定。
+    ``use_model=False`` 时强制走确定性规划（不联网、可复现，供回归测试用）。
     """
     conn = _open(db_path)
     try:
-        model, reason = writing.default_model()
+        if use_model:
+            model, reason = writing.default_model()
+        else:
+            model, reason = None, "调用方显式要求不使用模型"
         result = sections.plan_section(
             conn, project_id=project_id, section_key=section_key,
             instruction=instruction, user_fields=user_fields,
@@ -75,19 +80,25 @@ def plan_section(db_path: str | Path | None, project_id: int, section_key: str,
 def project_plan(db_path: str | Path | None, project_id: int,
                  topic: str = "", instruction: str = "",
                  settings: Any = None,
-                 persist: bool = True) -> dict[str, Any]:
+                 persist: bool = True,
+                 planner_model: Any = None,
+                 use_model: bool = True) -> dict[str, Any]:
     """生成整篇工作规划（唯一规划节点）。
 
     不传 ``instruction`` → 系统依主题自拟；传了 → 以用户指令为准。
+    ``use_model=False`` 时强制走确定性规划（不联网、可复现，供回归测试用）。
     """
     conn = _open(db_path)
     try:
-        model, reason = writing.default_model()
+        if planner_model is None and use_model:
+            planner_model, reason = writing.default_model()
+        else:
+            reason = "" if use_model else "调用方显式要求不使用模型"
         result = sections.build_project_plan(
             conn, project_id=int(project_id), topic=topic,
-            instruction=instruction, settings=settings, planner_model=model,
-            persist=persist)
-        result["model_unavailable_reason"] = reason if model is None else ""
+            instruction=instruction, settings=settings,
+            planner_model=planner_model, persist=persist)
+        result["model_unavailable_reason"] = reason if planner_model is None else ""
         return result
     except ValueError as exc:
         return {"ok": False, "error": str(exc)}
@@ -114,17 +125,27 @@ def section_templates(db_path: str | Path | None, genre: str | None = None
 def compose_section(db_path: str | Path | None, project_id: int, section_key: str,
                     instruction: str = "",
                     settings: Any = None,
-                    user_fields: dict[str, Any] | None = None) -> dict[str, Any]:
+                    user_fields: dict[str, Any] | None = None,
+                    use_model: bool = True) -> dict[str, Any]:
     """撰写此部分：启动异步作业，返回 ``job_id``。
 
     指令与字段都可选——都不给即"系统自拟"模式。
+    ``use_model=False`` 时成段也走骨架降级（不联网、可复现，供回归测试用）。
     """
     path = str(db_path) if db_path else None
     try:
+        compose_model = None
+        compose_reason = ""
+        if use_model:
+            compose_model, compose_reason = writing.default_model()
+        else:
+            compose_reason = "调用方显式要求不使用模型"
         job_id = sections.start_section_run(
             project_id=int(project_id), section_key=str(section_key),
             instruction=str(instruction or ""), user_fields=user_fields,
             db_path=path, settings=settings,
+            compose_model=compose_model,
+            compose_model_reason=compose_reason,
         )
     except ValueError as exc:
         return {"ok": False, "error": str(exc)}

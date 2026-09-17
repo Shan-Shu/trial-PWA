@@ -339,12 +339,17 @@ def main(argv: list[str] | None = None) -> int:
         check(exp.get("ok") and "手工内容" in exp["content"], "导出项目 Markdown")
 
         # ---------------- 大纲节点指令工作流（充分性判定 → 成段 → 轨迹） ----------------
+        # 所有涉及模型注入的写入端点都传 use_model=False：
+        # **冒烟必须离线可复现**——本机一旦配好 .env，这些端点会真的去调
+        # deepseek-v4-pro，导致 20s 超时、整轮冒烟挂掉（模型可用与否不该决定回归成败）。
+        # 真实模型的验证另有一套：见 _probe_real_llm.py 与 docs/MERGE_NOTES.md 的说明。
+        offline = {"use_model": False}
         node_key = first["section_key"]
         node_instr = ("summarise gold catalysed annulation of ynamides, "
                       "cite at least 1 source")
         status, plan_res = post(
             f"{base}/api/writing/projects/{project_id}/sections/{node_key}/plan",
-            {"instruction": node_instr})
+            {"instruction": node_instr, **offline})
         check(plan_res.get("ok") is True, "节点指令：规划端点可用",
               str(plan_res)[:200])
         verdict = plan_res.get("sufficiency") or {}
@@ -363,7 +368,7 @@ def main(argv: list[str] | None = None) -> int:
 
         status, job = post(
             f"{base}/api/writing/projects/{project_id}/sections/{node_key}/compose",
-            {"instruction": node_instr})
+            {"instruction": node_instr, **offline})
         check(job.get("ok") is True and job.get("job_id"),
               "节点指令：撰写作业已受理", str(job)[:200])
         job_id = job.get("job_id")
@@ -416,6 +421,9 @@ def main(argv: list[str] | None = None) -> int:
               "节点指令：节点状态徽标接口可用")
 
         # ---------------- 工作规划（唯一的规划节点）+ 部分模板 ----------------
+        # **一律 use_model=False**：冒烟必须离线可复现，不依赖外部模型。
+        # 早期没传这个参数，于是在本机配好 .env 之后，这些检查会真的去调
+        # deepseek-v4-pro，导致 20s 超时、整轮冒烟挂掉（模型可用与否不该决定回归成败）。
         status, tpls = get(f"{base}/api/writing/templates?genre=experiment_protocol")
         check(status == 200 and tpls.get("ok") and tpls.get("templates"),
               "模板：实验设计体裁有部分模板")
@@ -436,7 +444,7 @@ def main(argv: list[str] | None = None) -> int:
                                      "topic": "gold catalysis ynamide annulation",
                                      "genre": "experiment_protocol"})
         plan_pid = plan_created.get("project_id")
-        status, wplan = post(f"{base}/api/writing/projects/{plan_pid}/plan", {})
+        status, wplan = post(f"{base}/api/writing/projects/{plan_pid}/plan", offline)
         check(wplan.get("ok") is True, "工作规划：只给主题即可生成", str(wplan)[:200])
         check(wplan.get("mode") == "auto",
               "工作规划：无指令时进入系统自拟模式", str(wplan.get("mode")))
@@ -459,14 +467,14 @@ def main(argv: list[str] | None = None) -> int:
         # 用户填了字段 → user 模式并优先
         status, wplan_user = post(
             f"{base}/api/writing/projects/{plan_pid}/plan",
-            {"instruction": "只关注配体效应"})
+            {"instruction": "只关注配体效应", **offline})
         check(wplan_user.get("mode") == "user",
               "工作规划：给了指令即进入用户模式", str(wplan_user.get("mode")))
 
         # 预判：参数节应因缺量化条件判不足，且指出缺的是 conditions
         status, pre_plan = post(
             f"{base}/api/writing/projects/{plan_pid}/sections/parameters/plan",
-            {"fields": {"params": "无水无氧，-20 °C"}})
+            {"fields": {"params": "无水无氧，-20 °C"}, **offline})
         check(pre_plan.get("ok") is True, "预判：参数节可预判", str(pre_plan)[:200])
         check(pre_plan.get("template_key") == "proto_parameters",
               "预判：取到参数节的模板", str(pre_plan.get("template_key")))
@@ -481,7 +489,7 @@ def main(argv: list[str] | None = None) -> int:
         # 带缺口写作：正文有内容且顶部有标注
         status, gap_job = post(
             f"{base}/api/writing/projects/{plan_pid}/sections/parameters/compose",
-            {"fields": {"params": "无水无氧，-20 °C"}})
+            {"fields": {"params": "无水无氧，-20 °C"}, **offline})
         check(gap_job.get("ok") is True, "带缺口写作：作业已受理")
         gap_snap = {}
         for _ in range(60):
@@ -532,11 +540,30 @@ def main(argv: list[str] | None = None) -> int:
     finally:
         server.should_exit = True
         thread.join(timeout=5)
+        # 收尾删库：Windows 上只要还有任何句柄（未关闭的连接、WAL 文件、还没退完的
+        # 服务线程）就会 WinError 32，而**删不掉库会把整轮冒烟判成失败**——
+        # 检查全过了却因为清理失败报错，很容易误导。这里做成容错 + 重试：
+        # 清理不成功只提示，不影响结论。
         if not args.keep and db_path.exists():
+            import gc
+            gc.collect()
+            time.sleep(0.5)
+            leftover: list[str] = []
             for suffix in ("", "-wal", "-shm"):
                 p = Path(str(db_path) + suffix)
+                for attempt in range(5):
+                    if not p.exists():
+                        break
+                    try:
+                        p.unlink()
+                        break
+                    except OSError:
+                        gc.collect()
+                        time.sleep(0.4 * (attempt + 1))
                 if p.exists():
-                    p.unlink()
+                    leftover.append(p.name)
+            if leftover:
+                print(f"[提示] 临时库未能删除（被占用，不影响结论）：{leftover}")
 
     failed = [label for ok, label in RESULTS if not ok]
     print(f"\n合计 {len(RESULTS)} 项，通过 {len(RESULTS) - len(failed)}，失败 {len(failed)}")
