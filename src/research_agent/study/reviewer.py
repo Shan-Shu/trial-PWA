@@ -602,7 +602,7 @@ def make_review_node(model=None, max_rounds: int = 3,
             )
             try:
                 raw, call_diag = invoke_with_timeout(
-                    model, prompt,
+                    model, prompt, node="reviewer", role="review",
                     timeout=getattr(settings, "study_review_timeout", 420))
                 if raw is None:
                     raise RuntimeError(call_diag.get("error") or "模型调用失败")

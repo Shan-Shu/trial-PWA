@@ -322,7 +322,9 @@ def compose_section(
                          or "无",
                 "gap_hint": gap_hint,
             })
-            msg = model.invoke([HumanMessage(content=prompt)])
+            from research_agent.logging import logged_invoke
+            msg = logged_invoke(model, prompt, node="content_builder",
+                                role="content")
             content = str(getattr(msg, "content", msg) or "").strip()
             if not content:
                 raise ValueError("模型返回空内容")

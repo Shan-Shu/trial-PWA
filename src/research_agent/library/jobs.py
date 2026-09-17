@@ -19,6 +19,8 @@ import uuid
 from typing import Any, Callable, Iterable
 
 from research_agent.db import connect, log_event
+from research_agent.logging import NULL_CONTEXT, bind_trace
+from research_agent.logging import log_event as dsh_log
 
 logger = logging.getLogger(__name__)
 
@@ -88,6 +90,9 @@ class LibraryJobManager:
         """
         job_id = uuid.uuid4().hex[:12]
         job = LibraryJob(job_id, action, int(total or 0))
+        # trace：由发起方（HTTP 中间件）带进来；作业线程是独立上下文，
+        # 必须显式传递，否则子线程日志会丢掉 trace。
+        trace = str(kwargs.get("trace") or "")
         with self._lock:
             self._jobs[job_id] = job
             self._prune_locked()
@@ -103,50 +108,66 @@ class LibraryJobManager:
 
         def _run() -> None:
             db = None
-            try:
-                db = connect(self.db_path)
-                log_event(db, "library", f"{action}-start", None,
-                          {"job_id": job_id, "total": int(total or 0)})
-            except Exception:  # noqa: BLE001 —— 事件日志失败不应影响作业
-                logger.warning("作业事件写入失败 job=%s", job_id, exc_info=True)
-            try:
-                result = runner(*args, progress_cb=_progress,
-                                cancel_event=job.cancel_event, **kwargs)
-                with self._lock:
-                    current = self._jobs[job_id]
-                    if current.cancel_event.is_set():
-                        current.status = "cancelled"
-                        current.message = "已取消"
-                    else:
-                        current.status = "done"
-                        current.percent = 100.0
-                        current.message = "完成"
-                    current.result = result if isinstance(result, dict) else {"result": result}
-                    current.ended_at = time.time()
-            except BaseException as exc:  # noqa: BLE001 —— 作业边界必须兜住
-                with self._lock:
-                    current = self._jobs.get(job_id)
-                    if current:
-                        cancelled = current.cancel_event.is_set()
-                        current.status = "cancelled" if cancelled else "error"
-                        current.error = None if cancelled else f"{type(exc).__name__}: {exc}"
-                        current.message = "已取消" if cancelled else "失败"
+            _ctx = bind_trace(trace) if trace else NULL_CONTEXT
+            with _ctx:
+                dsh_log("job.start", node=str(action), job=job_id,
+                        data={"action": action, "total": int(total or 0)})
+                try:
+                    db = connect(self.db_path)
+                    log_event(db, "library", f"{action}-start", None,
+                              {"job_id": job_id, "total": int(total or 0)})
+                except Exception:  # noqa: BLE001 —— 事件日志失败不应影响作业
+                    logger.warning("作业事件写入失败 job=%s", job_id,
+                                   exc_info=True)
+                try:
+                    result = runner(*args, progress_cb=_progress,
+                                    cancel_event=job.cancel_event, **kwargs)
+                    with self._lock:
+                        current = self._jobs[job_id]
+                        if current.cancel_event.is_set():
+                            current.status = "cancelled"
+                            current.message = "已取消"
+                        else:
+                            current.status = "done"
+                            current.percent = 100.0
+                            current.message = "完成"
+                        current.result = result if isinstance(result, dict) else {"result": result}
                         current.ended_at = time.time()
-                if not isinstance(exc, KeyboardInterrupt):
-                    logger.warning("作业失败 job=%s", job_id, exc_info=True)
-            finally:
-                if db is not None:
-                    try:
-                        with self._lock:
-                            snap = self._jobs[job_id].snapshot()
-                        log_event(db, "library", f"{action}-end", None, snap)
-                    except Exception:  # noqa: BLE001
-                        pass
-                    finally:
+                except BaseException as exc:  # noqa: BLE001 —— 作业边界必须兜住
+                    with self._lock:
+                        current = self._jobs.get(job_id)
+                        if current:
+                            cancelled = current.cancel_event.is_set()
+                            current.status = "cancelled" if cancelled else "error"
+                            current.error = None if cancelled else f"{type(exc).__name__}: {exc}"
+                            current.message = "已取消" if cancelled else "失败"
+                            current.ended_at = time.time()
+                    if not isinstance(exc, KeyboardInterrupt):
+                        logger.warning("作业失败 job=%s", job_id, exc_info=True)
+                finally:
+                    if db is not None:
                         try:
-                            db.close()
+                            with self._lock:
+                                snap = self._jobs[job_id].snapshot()
+                            log_event(db, "library", f"{action}-end", None, snap)
                         except Exception:  # noqa: BLE001
                             pass
+                        finally:
+                            try:
+                                db.close()
+                            except Exception:  # noqa: BLE001
+                                pass
+                    with self._lock:
+                        final = self._jobs[job_id].snapshot()
+                    dsh_log("job.end", node=str(action), job=job_id,
+                            level="INFO" if final.get("status") == "done"
+                            else "WARN",
+                            data={"action": action,
+                                  "status": final.get("status"),
+                                  "error": (final.get("error") or "")[:300],
+                                  "ms": round(
+                                      float(final.get("elapsed") or 0) * 1000,
+                                      1)})
 
         thread = threading.Thread(target=_run, name=f"libjob-{job_id}", daemon=True)
         with self._lock:

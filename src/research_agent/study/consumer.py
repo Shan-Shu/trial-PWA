@@ -1258,7 +1258,8 @@ def make_knowledge_consumer_node(conn: sqlite3.Connection | None = None,
                 )
                 try:
                     raw, call_diag = invoke_with_timeout(
-                        model, prompt,
+                        model, prompt, node="knowledge_consumer",
+                        role="consumer",
                         timeout=getattr(settings, "study_consumer_timeout", 600))
                     if raw is None:
                         raise RuntimeError(call_diag.get("error") or "模型调用失败")

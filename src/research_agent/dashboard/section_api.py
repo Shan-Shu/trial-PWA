@@ -265,11 +265,30 @@ def interview_answer(db_path: str | Path | None, project_id: int,
     界面应调 ``interview_step`` 起作业并轮询。
     """
     from research_agent.writing import interview as iv
+    from research_agent.logging import log_event, current_trace
     conn = _open(db_path)
+    trace = current_trace()
     try:
+        before = iv.load_state(conn, int(project_id))
+        before_stage = ""
+        before_key = before.current_section_key()
+        if before_key:
+            before_stage = before.section(before_key).stage
         iv.answer(conn, int(project_id), payload or {})
-        return iv.snapshot(conn, int(project_id))
+        snap = iv.snapshot(conn, int(project_id))
+        after_key = snap.get("current_section_key") or ""
+        log_event("interview.answer.received", node="interview", trace=trace,
+                  section=after_key,
+                  data={"answer_kind": str((payload or {}).get("kind") or ""),
+                        "before_stage": before_stage,
+                        "next_action": snap.get("next_action") or "",
+                        "stage": snap.get("stage") or "",
+                        "all_done": snap.get("all_done")})
+        return snap
     except ValueError as exc:
+        log_event("interview.answer.rejected", node="interview", level="WARN",
+                  trace=trace, data={"error": str(exc),
+                                     "payload_keys": sorted((payload or {}).keys())})
         return {"ok": False, "error": str(exc)}
     finally:
         conn.close()
@@ -285,11 +304,16 @@ def interview_step(db_path: str | Path | None, project_id: int,
     """
     from research_agent.writing import interview as iv
     from research_agent.writing import interview_loop
+    from research_agent.logging import log_event, current_trace
     conn = _open(db_path)
+    trace = current_trace()
     try:
         state = iv.load_state(conn, int(project_id))
         action = interview_loop.next_action(state)
         if not action:
+            log_event("interview.step", node="interview", trace=trace,
+                      data={"action": "", "outcome": "no_action",
+                            "source": "api"})
             return {"ok": True, "job_id": "", "action": "",
                     "snapshot": iv.snapshot(conn, int(project_id))}
         planner_model = gap_model = compose_model = None
@@ -305,9 +329,15 @@ def interview_step(db_path: str | Path | None, project_id: int,
             db_path=str(db_path) if db_path else None,
             settings=settings, planner_model=planner_model,
             gap_model=gap_model, compose_model=compose_model,
-            compose_model_reason=reason, use_model=use_model)
+            compose_model_reason=reason, use_model=use_model,
+            trace=trace)
+        log_event("interview.step", node="interview", trace=trace,
+                  data={"action": action, "job": job_id, "source": "api",
+                        "use_model": bool(use_model)})
         return {"ok": True, "job_id": job_id, "action": action}
     except ValueError as exc:
+        log_event("interview.step", node="interview", level="ERROR",
+                  trace=trace, data={"outcome": "failed", "error": str(exc)})
         return {"ok": False, "error": str(exc)}
     finally:
         conn.close()

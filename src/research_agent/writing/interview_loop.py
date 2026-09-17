@@ -18,10 +18,12 @@ from __future__ import annotations
 import logging
 import sqlite3
 import threading
+import time
 from typing import Any
 
 from research_agent.config import Settings, settings as default_settings
 from research_agent.db import connect
+from research_agent.logging import bind_trace, log_event
 from research_agent.writing import gap_planner
 from research_agent.writing import interview as iv
 from research_agent.writing.section_judge import judge_section, plan_section_request
@@ -65,6 +67,7 @@ def run_step(
     use_model: bool = True,
     progress_cb: Any = None,
     cancel_event: threading.Event | None = None,
+    trace: str = "",
 ) -> dict[str, Any]:
     """按当前阶段执行一步；返回 ``{"action": …, "stage": …, "snapshot": …}``。
 
@@ -82,43 +85,86 @@ def run_step(
     try:
         state = iv.load_state(db, project_id)
         action = next_action(state)
+        key = state.current_section_key()
+        sec = state.section(key) if key else None
+        _trace = trace or None
+
         if not action:
+            log_event("interview.step", node="interview", trace=_trace or "",
+                      section=key or "", data={
+                          "action": "", "stage": sec.stage if sec else "",
+                          "outcome": "no_action",
+                          "all_done": state.all_done(),
+                          "intake_done": state.intake_done(),
+                      })
             return {"ok": True, "action": "", "stage": "",
                     "snapshot": iv.snapshot(db, project_id)}
 
-        key = state.current_section_key()
-        sec = state.section(key)
         project = get_project(db, project_id) or {}
         heading = _heading(db, project_id, key)
 
         if cancel_event is not None and cancel_event.is_set():
+            log_event("interview.step", node="interview", trace=_trace or "",
+                      section=key, data={"action": action, "stage": sec.stage,
+                                         "outcome": "cancelled"})
             return {"ok": True, "action": action, "stage": sec.stage,
                     "cancelled": True, "snapshot": iv.snapshot(db, project_id)}
 
-        if action == "draft_options":
-            _do_draft_options(db, project_id, state, sec, project, heading,
-                              key, gap_model, progress_cb, use_model)
-        elif action == "judge":
-            _do_judge(db, project_id, state, sec, project, heading, key,
-                      planner_model, s, progress_cb, use_model)
-        elif action == "collaborate":
-            _do_collaborate(db, project_id, state, sec, project, heading, key,
-                            s, progress_cb)
-        elif action == "write":
-            _do_write(db, project_id, state, sec, project, heading, key,
-                      planner_model, compose_model, compose_model_reason, s,
-                      progress_cb, db_path=path, use_model=use_model)
-        else:
-            return {"ok": False, "action": action, "stage": sec.stage,
-                    "error": f"未知的动作类型: {action}",
-                    "snapshot": iv.snapshot(db, project_id)}
+        log_event("interview.step", node="interview", trace=_trace or "",
+                  section=key, data={"action": action,
+                                     "stage": sec.stage, "phase": "start"})
+        started = time.monotonic()
+        _ctx = bind_trace(_trace) if _trace else _null_ctx()
+        with _ctx:
+            if action == "draft_options":
+                _do_draft_options(db, project_id, state, sec, project, heading,
+                                  key, gap_model, progress_cb, use_model)
+            elif action == "judge":
+                _do_judge(db, project_id, state, sec, project, heading, key,
+                          planner_model, s, progress_cb, use_model)
+            elif action == "collaborate":
+                _do_collaborate(db, project_id, state, sec, project, heading,
+                                key, s, progress_cb)
+            elif action == "write":
+                _do_write(db, project_id, state, sec, project, heading, key,
+                          planner_model, compose_model, compose_model_reason,
+                          s, progress_cb, db_path=path, use_model=use_model)
+            else:
+                log_event("interview.step", node="interview",
+                          trace=_trace or "", level="ERROR", section=key,
+                          data={"action": action, "stage": sec.stage,
+                                "outcome": "unknown_action"})
+                return {"ok": False, "action": action, "stage": sec.stage,
+                        "error": f"未知的动作类型: {action}",
+                        "snapshot": iv.snapshot(db, project_id)}
 
         iv.save_state(db, project_id, state)
+        elapsed = (time.monotonic() - started) * 1000
+        log_event("interview.step", node="interview", trace=_trace or "",
+                  section=key, ms=elapsed,
+                  data={"action": action, "stage": sec.stage,
+                        "next_stage": state.section(key).stage,
+                        "outcome": "ok"})
         return {"ok": True, "action": action, "stage": sec.stage,
                 "section_key": key,
                 "snapshot": iv.snapshot(db, project_id)}
+    except Exception as exc:  # noqa: BLE001 —— 记录现场后原样抛出
+        log_event("interview.step", node="interview", level="ERROR",
+                  trace=trace or "", data={"outcome": "failed",
+                                           "error": f"{type(exc).__name__}: {exc}"})
+        raise
     finally:
         db.close()
+
+
+class _null_ctx:
+    """无 trace 时的空上下文（省掉一次 contextvar 设置）。"""
+
+    def __enter__(self) -> None:
+        return None
+
+    def __exit__(self, *exc: Any) -> None:
+        return None
 
 
 def _progress(cb: Any, percent: float, message: str) -> None:
@@ -207,6 +253,14 @@ def _do_judge(db: sqlite3.Connection, project_id: int,
         settings=settings)
     sec.verdict = verdict
     decision = str(verdict.get("decision") or "")
+    log_event("sufficiency.judge", node="interview", section=key, db=db,
+              data={"decision": decision,
+                    "headline": verdict.get("headline") or "",
+                    "unmet": list(verdict.get("unmet_dimensions") or []),
+                    "hard_gates": list(verdict.get("hard_gates") or []),
+                    "cited": verdict.get("cited_count"),
+                    "rounds_done": int(sec.collaboration.get("rounds_done") or 0),
+                    "queries": len(queries)})
     if decision == "sufficient":
         sec.stage = iv.STAGE_WRITING
         state.say("ai", f"「{heading}」的支撑足够，开始撰写。")

@@ -19,12 +19,51 @@ export class ApiError extends Error {
  */
 const DEFAULT_TIMEOUT_MS = 120000;
 
+/**
+ * 本页会话的 trace：所有请求带上同一个 `X-Trace-Id`，后端中间件沿用，
+ * 于是"点击 → 请求 → 作业 → 模型"落在同一条链上（`research-agent-logs --trace`）。
+ * 用 sessionStorage 存，一次会话内稳定，刷新页面换新。
+ */
+const TRACE_KEY = "ra-trace";
+export function traceId() {
+  try {
+    let value = sessionStorage.getItem(TRACE_KEY);
+    if (!value) {
+      value = `t-${Math.random().toString(16).slice(2, 10)}`;
+      sessionStorage.setItem(TRACE_KEY, value);
+    }
+    return value;
+  } catch {
+    return "";
+  }
+}
+
+/**
+ * 记一条前端事件到后端统一日志。**只用于诊断**：失败静默忽略，
+ * 绝不影响业务；事件名由后端白名单校验。
+ */
+export function logUiEvent(evt, data) {
+  const payload = { evt, data: data || {}, trace: traceId() };
+  try {
+    fetch("/api/log", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+      keepalive: true,
+    }).catch(() => {});
+  } catch {
+    /* 诊断日志失败不能影响业务 */
+  }
+}
+
 async function request(path, { method = "GET", body, headers, timeoutMs } = {}) {
   const options = { method, headers: { ...(headers || {}) } };
   if (body !== undefined) {
     options.headers["Content-Type"] = "application/json";
     options.body = JSON.stringify(body);
   }
+  const trace = traceId();
+  if (trace) options.headers["X-Trace-Id"] = trace;
   const limit = timeoutMs || DEFAULT_TIMEOUT_MS;
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), limit);

@@ -972,7 +972,9 @@ def _expand_selected(model: Any, draft: dict[str, Any], contract: dict[str, Any]
     ).replace(
         "{candidates}", json.dumps(payload, ensure_ascii=False, indent=2))
     try:
-        raw, call_diag = invoke_with_timeout(model, prompt, timeout=timeout)
+        raw, call_diag = invoke_with_timeout(model, prompt, timeout=timeout,
+                                             node="content_builder",
+                                             role="content")
         if raw is None:
             raise RuntimeError(call_diag.get("error") or "模型调用失败")
         parsed = parse_json_object(raw)
@@ -1072,7 +1074,7 @@ def make_content_node(model=None,
                 ).replace("{target_chars}", str(target_chars))
             try:
                 raw, call_diag = invoke_with_timeout(
-                    model, prompt,
+                    model, prompt, node="content_builder", role="content",
                     timeout=getattr(settings, "study_content_timeout", 420))
                 if raw is None:
                     raise RuntimeError(call_diag.get("error") or "模型调用失败")

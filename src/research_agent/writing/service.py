@@ -37,6 +37,12 @@ __all__ = [
 ]
 
 
+def _logged(model: Any, prompt: str, node: str, role: str = "") -> Any:
+    """带事件日志地调一次模型（替代裸 ``model.invoke``）。"""
+    from research_agent.logging import logged_invoke
+    return logged_invoke(model, prompt, node=node, role=role or node)
+
+
 def writing_pack() -> dict[str, Any]:
     """写作技能包内容（体裁、章节骨架、提示词模板）。"""
     data = packs.skill_data("writing")
@@ -226,14 +232,13 @@ def generate_outline(conn: sqlite3.Connection, project_id: int,
 
     if model is not None:
         try:
-            from langchain_core.messages import HumanMessage
             prompt = _prompt("outline_user").format(
                 genre_label=spec.get("label") or project.get("genre") or "",
                 topic=topic or project.get("topic") or project.get("title") or "",
                 materials_digest=_material_digest(
                     _materials(None, topic or project.get("topic") or "")),
             )
-            msg = model.invoke([HumanMessage(content=prompt)])
+            msg = _logged(model, prompt, "planner")
             raw = getattr(msg, "content", str(msg))
             parsed = _parse_json(raw)
             proposed = parsed.get("sections") if isinstance(parsed, dict) else None
@@ -324,13 +329,12 @@ def generate_section(conn: sqlite3.Connection, project_id: int, section_key: str
 
     if model is not None:
         try:
-            from langchain_core.messages import HumanMessage
             prompt = _prompt("section_user").format(
                 topic=topic or project.get("topic") or project.get("title") or "",
                 heading=heading, note=note or "无特殊要求", words=words or 800,
                 materials=_materials_block(materials),
             )
-            msg = model.invoke([HumanMessage(content=prompt)])
+            msg = _logged(model, prompt, "content_builder", "content")
             content = str(getattr(msg, "content", msg) or "").strip()
             if content:
                 save_section(conn, project_id, section_key, heading, content,
@@ -374,9 +378,8 @@ def polish_section(conn: sqlite3.Connection, project_id: int, section_key: str,
         return {"content": content, "polished": False,
                 "reason": "未提供模型"}
     try:
-        from langchain_core.messages import HumanMessage
         prompt = _prompt("polish_user", "{content}").format(content=content)
-        msg = model.invoke([HumanMessage(content=prompt)])
+        msg = _logged(model, prompt, "content_builder", "content")
         polished = str(getattr(msg, "content", msg) or "").strip()
         if not polished:
             return {"content": content, "polished": False, "reason": "模型返回空内容"}

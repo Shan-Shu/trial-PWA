@@ -56,9 +56,10 @@ CUSTOM_PLAN_TEMPLATES = [
 ]
 
 
-def _invoke(model: Any, prompt: str) -> str:
-    from langchain_core.messages import HumanMessage
-    msg = model.invoke([HumanMessage(content=prompt)])
+def _invoke(model: Any, prompt: str, *, node: str = "planner",
+            role: str = "planner") -> str:
+    from research_agent.logging import logged_invoke
+    msg = logged_invoke(model, prompt, node=node, role=role)
     return str(getattr(msg, "content", msg) or "")
 
 

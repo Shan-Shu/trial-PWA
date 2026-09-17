@@ -16,7 +16,7 @@
  */
 "use strict";
 
-import { api } from "../common/api.js";
+import { api, logUiEvent } from "../common/api.js";
 import { $, h, trunc } from "../common/dom.js";
 import { card, badge, empty, loading, errorBox } from "../ui/design.js";
 import { toast, toastError } from "../common/ui.js";
@@ -227,12 +227,15 @@ async function answerAndAdvance(payload) {
   const key = questionKey(payload.kind);
   if (busy || inFlightKey === key) {
     console.warn("[writing] 忽略重复提交", key);
+    logUiEvent("ui.state", { what: "submit_deduped", key });
     return;
   }
   busy = true;
   isAdvancing = true;
   inFlightKey = key;
   console.info("[writing] 提交作答", key, JSON.stringify(payload));
+  logUiEvent("ui.state", { what: "submit", key, kind: payload.kind,
+                           decision: payload.decision || payload.choice || "" });
   // **先**把上一题的选项收掉：否则模型慢的时候（实测成段要 40s+），
   // 用户会盯着已经答过的选项，以为没生效（用户报过这个问题）。
   clearQuestion("已提交，正在处理…");
@@ -243,6 +246,9 @@ async function answerAndAdvance(payload) {
     snap = res;
     console.info("[writing] 作答后 next_action =", JSON.stringify(res.next_action),
                  "question =", JSON.stringify((res.question || {}).kind));
+    logUiEvent("ui.state", { what: "submit_ok", key,
+                             next_action: res.next_action || "",
+                             question: (res.question || {}).kind || "" });
     if (res.next_action) {
       await runStep();
     } else {
@@ -250,6 +256,8 @@ async function answerAndAdvance(payload) {
     }
   } catch (err) {
     console.error("[writing] 作答失败", err);
+    logUiEvent("ui.state", { what: "submit_failed", key,
+                             error: String((err && err.message) || err) });
     toastError(err);
     clearQuestion("");
     render();
@@ -549,13 +557,46 @@ function installGlobalDelegate() {
     if (!el) return;
     // 只处理写作台面板内的点击，避免影响其他页面
     if (!el.closest("#wrBody")) return;
+    // 诊断：委托到底有没有跑到（"点了没反应"的第一分界线）。
+    // 有 ui.click 而没有 http.req ⇒ 问题在 handlePanelClick 的未命中分支。
+    const marker = describeTarget(el);
+    logUiEvent("ui.click", { target: marker, stage: currentStage() });
+    let handled = false;
     try {
-      handlePanelClick(el, event);
+      handled = handlePanelClick(el, event);
     } catch (err) {
       console.error("[writing] 点击处理失败", err);
       toastError(err);
+      logUiEvent("ui.state", { what: "click_error", target: marker,
+                               error: String((err && err.message) || err) });
+      return;
+    }
+    if (!handled) {
+      // 未命中任何分支：这就是"点了没反应"的真身，必须留下证据
+      console.warn("[writing] 点击未命中任何分支", marker);
+      logUiEvent("ui.state", { what: "click_unhandled", target: marker,
+                               stage: currentStage() });
     }
   });
+}
+
+/** 把被点击元素描述成一行短标识（诊断用，不含敏感内容）。 */
+function describeTarget(el) {
+  const node = el.closest("[data-genre],[data-choice],[data-section]," +
+                          "[id]") || el;
+  const id = node.id ? `#${node.id}` : "";
+  const tag = node.tagName ? node.tagName.toLowerCase() : "?";
+  const attrs = ["data-genre", "data-choice", "data-section", "data-cplan"]
+    .map((name) => (node.getAttribute && node.getAttribute(name)
+      ? `[${name}=${node.getAttribute(name)}]` : ""))
+    .join("");
+  return `${tag}${id}${attrs}`;
+}
+
+/** 当前所处阶段（诊断用）。 */
+function currentStage() {
+  const stage = (snap && (snap.stage || (snap.question || {}).stage)) || "";
+  return String(stage);
 }
 
 /** 按 data-* 与 id 派发；返回 true 表示已处理 */

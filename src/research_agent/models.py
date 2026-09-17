@@ -189,7 +189,12 @@ def build_role_model(
         "ROLE_PROVIDER_" + role.upper(), ROLE_PROVIDER[role]
     )
     model = (model or os.getenv(ROLE_MODEL_ENV[role], ROLE_MODEL_DEFAULT[role])).strip()
-    return build_chat_model(provider=provider, model_name=model, temperature=temperature)
+    built = build_chat_model(provider=provider, model_name=model,
+                             temperature=temperature)
+    # 透明日志代理：所有 invoke 自动落统一事件日志（谁在调、多慢、多大），
+    # 调用点无需任何改动；管理链条的操作透传，对 LangGraph 透明。
+    from research_agent.logging.proxy import LoggedModel
+    return LoggedModel(built, role=role)
 
 
 def role_model_binding(role: str) -> dict[str, str]:

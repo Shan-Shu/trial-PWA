@@ -28,6 +28,7 @@ research-agent = "research_agent:main"
 research-agent-pipeline = "research_agent.pipeline:main"
 research-agent-dashboard = "research_agent.dashboard.app:main"
 research-agent-study = "research_agent.study.graph:main"
+research-agent-logs = "research_agent.logging:main"
 
 [build-system]
 requires = ["uv_build>=0.12.10,<0.13.0"]

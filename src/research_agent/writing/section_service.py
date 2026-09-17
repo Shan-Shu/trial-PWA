@@ -537,6 +537,7 @@ def start_interview_step(
     compose_model: Any = None,
     compose_model_reason: str = "",
     use_model: bool = True,
+    trace: str = "",
 ) -> str:
     """起一个"推进访谈一步"的作业，返回 ``job_id``。
 
@@ -557,6 +558,7 @@ def start_interview_step(
         compose_model=compose_model,
         compose_model_reason=compose_model_reason,
         use_model=use_model,
+        trace=trace,
         total=1,
     )
 

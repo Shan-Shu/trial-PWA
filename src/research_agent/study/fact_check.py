@@ -286,7 +286,7 @@ def make_fact_check_node(model=None, settings: Any = None,
                 }, ensure_ascii=False, indent=2))
             try:
                 raw, call_diag = invoke_with_timeout(
-                    model, prompt,
+                    model, prompt, node="fact_checker", role="fact_check",
                     timeout=getattr(settings, "study_fact_check_timeout", 300)
                     if settings is not None else 300)
                 if raw is None:

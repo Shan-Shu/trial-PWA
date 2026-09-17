@@ -7,6 +7,9 @@
 from __future__ import annotations
 
 import argparse
+import json
+import re
+import time
 from pathlib import Path
 from typing import Optional
 
@@ -21,8 +24,19 @@ from research_agent.dashboard import api as dbapi
 from research_agent.dashboard import library_api as libapi
 from research_agent.dashboard import writing_api as wrtapi
 from research_agent.dashboard import section_api as secapi
+from research_agent.logging import log_event, new_trace, trace_var
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
+
+#: 允许前端上报的事件名（白名单：只收诊断用的事件，避免日志被随意污染）
+_UI_EVENTS = {"ui.click", "ui.state"}
+
+_TRACE_RE = re.compile(r"^t-[A-Za-z0-9_-]{4,40}$")
+
+
+def _valid_trace(value: str) -> bool:
+    """校验前端传来的 trace，避免任意字符串进入日志。"""
+    return bool(_TRACE_RE.match(value or ""))
 
 
 def create_app(db_path: str | Path | None = None,
@@ -44,9 +58,67 @@ def create_app(db_path: str | Path | None = None,
     app.state.inject_llms = bool(inject_llms)
     app.state.settings = settings or Settings(db_path=_db)
 
+    @app.middleware("http")
+    async def _log_requests(request: Request, call_next):
+        """每个 API 请求一个 trace：前端发起的动作与后端处理能对上号。
+
+        排查"点了没反应"时，先看有没有 ``http.req``：没有就是前端没发出去
+        （点击未绑定/被拦截），有而结果异常就是后端的事。
+        """
+        path = request.url.path
+        if not path.startswith("/api/"):
+            return await call_next(request)
+        # 前端带了自己的 trace 就沿用：点击与它的后续请求必须同链。
+        incoming = (request.headers.get("X-Trace-Id") or "").strip()
+        trace = incoming if _valid_trace(incoming) else new_trace()
+        token = trace_var.set(trace)
+        started = time.perf_counter()
+        try:
+            response = await call_next(request)
+            status = response.status_code
+        except Exception as exc:  # noqa: BLE001
+            log_event("http.res", level="ERROR", trace=trace,
+                      ms=(time.perf_counter() - started) * 1000,
+                      data={"method": request.method, "path": path,
+                            "status": 500,
+                            "error": f"{type(exc).__name__}: {exc}"})
+            trace_var.reset(token)
+            raise
+        log_event("http.res", trace=trace,
+                  level="INFO" if status < 400 else "WARN",
+                  ms=(time.perf_counter() - started) * 1000,
+                  data={"method": request.method, "path": path,
+                        "status": status,
+                        "query": str(request.url.query or "")[:200]})
+        trace_var.reset(token)
+        response.headers["X-Trace-Id"] = trace
+        return response
+
     @app.get("/api/health")
     def health(request: Request) -> dict:
         return {"ok": True, "db": request.app.state.db_path}
+
+    @app.post("/api/log")
+    def frontend_log(request: Request, payload: dict = Body(...)) -> dict:
+        """接收前端诊断事件（`ui.click` / `ui.state`）。
+
+        **为什么需要**：排查"点了没反应"时，第一件事就是确认点击处理到底有没有
+        跑起来。浏览器控制台只在本机可见，而这条链路会落到统一日志里，
+        于是"有 ui.click、无 http.req"可以直接判定为前端问题。
+
+        安全性：事件名走白名单，尺寸有上限，只写日志不落数据库。
+        """
+        evt = str(payload.get("evt") or "")
+        if evt not in _UI_EVENTS:
+            return {"ok": False, "error": f"未允许的事件名: {evt}"}
+        data = payload.get("data")
+        if not isinstance(data, dict):
+            data = {"value": str(data)[:200]}
+        if len(json.dumps(data, ensure_ascii=False)) > 4000:
+            data = {"truncated": True, "keys": sorted(data.keys())[:20]}
+        log_event(evt, node="ui", trace=str(payload.get("trace") or ""),
+                  data=data)
+        return {"ok": True}
 
     @app.get("/api/databases")
     def databases() -> list[dict]:
