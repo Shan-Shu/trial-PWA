@@ -250,10 +250,13 @@ def _do_write(db: sqlite3.Connection, project_id: int,
     from research_agent.writing.section_service import run_section_workflow
 
     _progress(progress_cb, 30.0, f"正在撰写「{heading}」…")
-    if compose_model is None and use_model and not compose_model_reason:
+    if not use_model:
+        # 离线/回归：**绝不构建模型**。早期只判了 compose_model is None，
+        # 结果离线时仍然自动构建了真实模型，写作阶段照样发起调用、卡到超时
+        # （实测浏览器冒烟等 240s）。use_model 必须能一路管到成段。
+        compose_model_reason = compose_model_reason or "调用方显式要求不使用模型（离线）"
+    elif compose_model is None and not compose_model_reason:
         compose_model, compose_model_reason = default_model()
-    elif not use_model and not compose_model_reason:
-        compose_model_reason = "调用方显式要求不使用模型（离线）"
     result = run_section_workflow(
         project_id=project_id, section_key=key,
         instruction=sec.resolved_focus or sec.custom_text,

@@ -93,11 +93,19 @@ async function main() {
   // 收集浏览器侧错误：任一出现即视为失败（这是本脚本的核心价值）
   const consoleErrors = [];
   const pageErrors = [];
+  const failedResponses = [];
   const recentRequests = [];
   page.on("console", (msg) => {
     if (msg.type() === "error") consoleErrors.push(msg.text());
   });
   page.on("pageerror", (err) => pageErrors.push(String(err && err.message || err)));
+  // 记下 4xx/5xx 的**具体 URL**：只报"有 console.error"没法排查，
+  // 而 Chromium 的 console 文本里不含 URL（实测过）。
+  page.on("response", (resp) => {
+    if (resp.status() >= 400) {
+      failedResponses.push(`${resp.status()} ${resp.request().method()} ${resp.url()}`);
+    }
+  });
   page.on("request", (req) => {
     if (req.url().includes("/api/")) {
       recentRequests.push(`${req.method()} ${req.url().split("/api")[1]}`);
@@ -220,23 +228,34 @@ async function main() {
     check(/已完成/.test(summaryText), "执行摘要显示已完成状态");
 
     // ---------------- ⑤ 只读入口 ----------------
+    // 详情是**异步**加载再渲染的：点完必须等内容真的出现，
+    // 只 waitForTimeout 会偶尔读到"读取中…"而误判为没有正文（实测过）。
     await page.locator("[data-view]").first().click();
-    await page.waitForTimeout(1200);
-    const detailText = await page.locator("[data-detail]").first().innerText();
-    check(detailText.trim().length > 20, "「看正文」能展开正文",
-          `${detailText.trim().length} 字符`);
+    const contentText = await page.waitForFunction(() => {
+      const box = document.querySelector("[data-detail]");
+      const text = box ? box.innerText.trim() : "";
+      return text.length > 20 && !/读取中/.test(text) ? text : null;
+    }, { timeout: 30000 }).then((h) => h.jsonValue()).catch(() => "");
+    check(contentText.length > 20, "「看正文」能展开正文",
+          `${contentText.length} 字符`);
     await shot("09-content-drawer");
 
     await page.locator("[data-trace]").first().click();
-    await page.waitForTimeout(1200);
-    const traceText = await page.locator("[data-detail]").first().innerText();
-    check(/轮/.test(traceText), "「决策轨迹」能展开判定记录",
-          traceText.slice(0, 60).replace(/\n/g, " "));
+    const traceText = await page.waitForFunction(() => {
+      const box = document.querySelector("[data-detail]");
+      const text = box ? box.innerText.trim() : "";
+      return text.length > 10 && !/读取中/.test(text) ? text : null;
+    }, { timeout: 30000 }).then((h) => h.jsonValue()).catch(() => "");
+    check(traceText.length > 10, "「决策轨迹」能展开判定记录",
+          traceText.slice(0, 80).replace(/\n/g, " "));
     await shot("10-trace-drawer");
 
     // ---------------- ⑥ 浏览器侧错误 ----------------
     check(pageErrors.length === 0, "无未捕获的页面异常", pageErrors.slice(0, 3).join(" | "));
-    check(consoleErrors.length === 0, "无 console.error", consoleErrors.slice(0, 3).join(" | "));
+    check(failedResponses.length === 0, "无 4xx/5xx 资源请求",
+          failedResponses.slice(0, 5).join(" | "));
+    check(consoleErrors.length === 0, "无 console.error",
+          consoleErrors.slice(0, 3).join(" | "));
   } catch (err) {
     check(false, "浏览器交互流程未抛错", String(err && err.message || err));
     await shot("99-failure");

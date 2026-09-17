@@ -79,6 +79,7 @@ export const writingPage = {
 
   mount(container) {
     host = container;
+    installGlobalDelegate();
     host.innerHTML = `
       <div class="page-head">
         <h1>写作台</h1>
@@ -200,23 +201,55 @@ async function loadSnapshot({ start = false } = {}) {
   }
 }
 
-/** 回答之后：若还有待执行的步骤，起作业并轮询 */
+/** 同一道题只允许提交一次。
+ *
+ * 为什么必须有：一次点击可能触发多次提交（事件冒泡/重复派发/用户连点），
+ * 而每次 `/interview/answer` 都会重新推进状态并重新渲染，结果就是
+ * **选项永远不消失、流程原地打转**（实测：一次点击发出 3 个 answer）。
+ * 用"当前题目的指纹"去重，指纹在处理完成后清空，下一题不受影响。
+ */
+let inFlightKey = "";
+
+function questionKey(kind) {
+  if (!snap || !snap.question) return `${kind}:unknown`;
+  const q = snap.question;
+  const head = snap.completed || 0;
+  return `${kind}:${head}:${q.step || q.section_key || ""}:${q.kind || ""}`;
+}
+
+/** 回答之后：立刻收起这一题，若还有待执行步骤就起作业并轮询 */
 async function answerAndAdvance(payload) {
-  if (busy) return;
+  const key = questionKey(payload.kind);
+  if (busy || inFlightKey === key) {
+    console.warn("[writing] 忽略重复提交", key);
+    return;
+  }
   busy = true;
+  inFlightKey = key;
+  console.info("[writing] 提交作答", key, JSON.stringify(payload));
+  // **先**把上一题的选项收掉：否则模型慢的时候（实测成段要 40s+），
+  // 用户会盯着已经答过的选项，以为没生效（用户报过这个问题）。
+  clearQuestion("已提交，正在处理…");
   try {
     const res = await api.post(
       `/api/writing/projects/${current.project_id}/interview/answer`, payload);
     if (!res.ok) throw new Error(res.error || "作答失败");
     snap = res;
-    render();
+    console.info("[writing] 作答后 next_action =", JSON.stringify(res.next_action),
+                 "question =", JSON.stringify((res.question || {}).kind));
     if (res.next_action) {
       await runStep();
+    } else {
+      render();
     }
   } catch (err) {
+    console.error("[writing] 作答失败", err);
     toastError(err);
+    clearQuestion("");
+    render();
   } finally {
     busy = false;
+    inFlightKey = "";
   }
 }
 
@@ -262,10 +295,11 @@ function render() {
     body.innerHTML = card(errorBox(new Error("访谈状态读取失败")), { flat: true });
     return;
   }
-  // 这三个都是**已由 h() 逐值转义**的 HTML 片段，命名带 Html 后缀以示区别
+  // 这两个是**已由 h() 逐值转义**的 HTML 片段，命名带 Html 后缀以示区别。
+  // renderQuestion() 由 renderConversation() 内部调用（两者必须各自计算，
+  // 不能跨函数引用局部变量——踩过 ReferenceError 的坑）。
   const conversationHtml = renderConversation();
   const sectionsHtml = renderSections();
-  const questionHtml = renderQuestion();
   body.innerHTML = `
     ${renderHeader()}
     <div class="grid-2" style="margin-top:12px;align-items:start">
@@ -273,6 +307,17 @@ function render() {
       <div>${sectionsHtml}</div>
     </div>`;
   bindConversation();
+}
+
+/** 清空当前输入区：用户答完立刻把上一题的选项收掉。
+ *
+ * 不清的话，从"提交作答"到"下一步渲染完"之间（模型可能要几十秒），
+ * 上一题的选项会一直留在下方，用户会以为"点了没反应"。
+ */
+function clearQuestion(placeholder = "已提交，正在处理…") {
+  const box = $("#wrInput");
+  if (!box) return;
+  box.innerHTML = `<div class="muted" style="font-size:12px">${h(placeholder)}</div>`;
 }
 
 function renderHeader() {
@@ -482,87 +527,109 @@ function renderSections() {
 
 // ------------------------------------------------------------------ 交互
 
-function bindConversation() {
-  // 用**事件委托**绑在持久容器上，而不是逐个按钮绑在会被重建的子节点上。
-  // 为什么：render() 会整块替换 #wrBody，若绑定的是那一刻查到的子元素，
-  // 而 DOM 里存在的其实是另一个同类元素（曾经 #wrInput 被创建过两次），
-  // 就会出现"按钮看得见、点了毫无反应、也不报错"——实测踩过这个坑，
-  // 只有真浏览器能发现（HTTP 与静态检查都看不见）。
-  const root = $("#wrBody");
-  if (!root) return;
-
-  root.onclick = async (event) => {
+/** 全局一次性的点击委托。
+ *
+ * 为什么不用"渲染后逐个绑定"：那种写法只要绑定函数在**挂载处理器之前**抛一次
+ * 异常，整块交互就永久失效——按钮看得见、点了毫无反应、还不报错。
+ * 实测踩过：偶发"选了方案没反应"且没有任何网络请求。
+ * 改成在模块加载时挂到 document 上，与渲染过程完全解耦。
+ */
+function installGlobalDelegate() {
+  if (installGlobalDelegate.done) return;
+  installGlobalDelegate.done = true;
+  document.addEventListener("click", (event) => {
     const el = event.target instanceof Element ? event.target : null;
     if (!el) return;
-    const pick = (attr) => el.closest(`[${attr}]`)?.getAttribute(attr);
-    const q = snap.question || {};
+    // 只处理写作台面板内的点击，避免影响其他页面
+    if (!el.closest("#wrBody")) return;
+    try {
+      handlePanelClick(el, event);
+    } catch (err) {
+      console.error("[writing] 点击处理失败", err);
+      toastError(err);
+    }
+  });
+}
 
-    // 前置：体裁
-    const genre = pick("data-genre");
-    if (genre) return answerAndAdvance({ kind: "intake", step: "genre", value: genre });
+/** 按 data-* 与 id 派发；返回 true 表示已处理 */
+function handlePanelClick(el, event) {
+  const root = document.getElementById("wrBody");
+  if (!root) return false;
+  const attr = (name) => el.closest(`[${name}]`)?.getAttribute(name);
+  const q = (snap && snap.question) || {};
 
-    // 前置：主题
-    if (el.closest("#wrTopicOk")) {
-      const value = $("#wrTopicInput")?.value.trim();
-      if (!value) { toast("请填写主题", "warn"); return; }
-      return answerAndAdvance({ kind: "intake", step: "topic", value });
+  const genre = attr("data-genre");
+  if (genre) {
+    event.preventDefault();
+    answerAndAdvance({ kind: "intake", step: "genre", value: genre });
+    return true;
+  }
+  if (el.closest("#wrTopicOk")) {
+    const value = document.getElementById("wrTopicInput")?.value.trim();
+    if (!value) { toast("请填写主题", "warn"); return true; }
+    answerAndAdvance({ kind: "intake", step: "topic", value });
+    return true;
+  }
+  if (el.closest("#wrSectionsOk")) {
+    const picked = [...root.querySelectorAll("[data-section]:checked")]
+      .map((node) => node.dataset.section);
+    if (!picked.length) { toast("至少要选一个部分", "warn"); return true; }
+    answerAndAdvance({ kind: "intake", step: "sections", value: picked });
+    return true;
+  }
+  const choice = attr("data-choice");
+  if (choice) {
+    event.preventDefault();
+    answerAndAdvance({ kind: "section_choice", section_key: q.section_key, choice });
+    return true;
+  }
+  if (el.closest("#wrSelfOk")) {
+    const text = document.getElementById("wrSelfText")?.value.trim();
+    if (!text) { toast("请先写下内容", "warn"); return true; }
+    answerAndAdvance({ kind: "section_choice", section_key: q.section_key,
+                       choice: "self", text });
+    return true;
+  }
+  if (el.closest("#wrGapOk")) {
+    const decided = root.querySelector('[name="gap"]:checked')?.value || "keep_gap";
+    const payload = { kind: "gap_decision", section_key: q.section_key,
+                      decision: decided };
+    if (decided === "collect") {
+      payload.rounds = document.getElementById("wrRoundsAi")?.checked
+        ? "ai" : (document.getElementById("wrRounds")?.value || 2);
     }
-    // 前置：部分
-    if (el.closest("#wrSectionsOk")) {
-      const picked = [...root.querySelectorAll("[data-section]:checked")]
-        .map((node) => node.dataset.section);
-      if (!picked.length) { toast("至少要选一个部分", "warn"); return; }
-      return answerAndAdvance({ kind: "intake", step: "sections", value: picked });
+    if (decided === "custom") {
+      const text = document.getElementById("wrCustomText")?.value.trim();
+      if (!text) { toast("自定义任务需要写一句说明", "warn"); return true; }
+      payload.text = text;
     }
-    // 部分：选方案 / 让 AI 定 / 我自己写
-    const choice = pick("data-choice");
-    if (choice) {
-      return answerAndAdvance({ kind: "section_choice",
-                                section_key: q.section_key, choice });
-    }
-    if (el.closest("#wrSelfOk")) {
-      const text = $("#wrSelfText")?.value.trim();
-      if (!text) { toast("请先写下内容", "warn"); return; }
-      return answerAndAdvance({ kind: "section_choice", section_key: q.section_key,
-                                choice: "self", text });
-    }
-    // 缺口决定
-    if (el.closest("#wrGapOk")) {
-      const decided = root.querySelector('[name="gap"]:checked')?.value || "keep_gap";
-      const payload = { kind: "gap_decision", section_key: q.section_key,
-                        decision: decided };
-      if (decided === "collect") {
-        payload.rounds = $("#wrRoundsAi")?.checked ? "ai" : ($("#wrRounds")?.value || 2);
-      }
-      if (decided === "custom") {
-        const text = $("#wrCustomText")?.value.trim();
-        if (!text) { toast("自定义任务需要写一句说明", "warn"); return; }
-        payload.text = text;
-      }
-      return answerAndAdvance(payload);
-    }
-    // 自定义方案
-    if (el.closest("#wrCustomOk")) {
-      const picked = root.querySelector('[name="cplan"]:checked')?.value;
-      if (!picked) { toast("请选一个方案", "warn"); return; }
-      return answerAndAdvance({ kind: "custom_plan", section_key: q.section_key,
-                                choice: picked });
-    }
-    if (el.closest("#wrRefineOk")) {
-      const text = $("#wrRefineText")?.value.trim();
-      if (!text) { toast("请写出要补充的说明", "warn"); return; }
-      return answerAndAdvance({ kind: "custom_plan", section_key: q.section_key,
-                                choice: "refine", text });
-    }
-    // 头部动作
-    if (el.closest("#wrSwitch")) {
-      stopPolling();
-      current = null;
-      snap = null;
-      return refresh();
-    }
-    if (el.closest("#wrRestart")) {
-      if (!window.confirm("重新访谈会清空本次问答进度（已写好的正文保留），继续？")) return;
+    answerAndAdvance(payload);
+    return true;
+  }
+  if (el.closest("#wrCustomOk")) {
+    const picked = root.querySelector('[name="cplan"]:checked')?.value;
+    if (!picked) { toast("请选一个方案", "warn"); return true; }
+    answerAndAdvance({ kind: "custom_plan", section_key: q.section_key,
+                       choice: picked });
+    return true;
+  }
+  if (el.closest("#wrRefineOk")) {
+    const text = document.getElementById("wrRefineText")?.value.trim();
+    if (!text) { toast("请写出要补充的说明", "warn"); return true; }
+    answerAndAdvance({ kind: "custom_plan", section_key: q.section_key,
+                       choice: "refine", text });
+    return true;
+  }
+  if (el.closest("#wrSwitch")) {
+    stopPolling();
+    current = null;
+    snap = null;
+    refresh();
+    return true;
+  }
+  if (el.closest("#wrRestart")) {
+    if (!window.confirm("重新访谈会清空本次问答进度（已写好的正文保留），继续？")) return true;
+    (async () => {
       try {
         snap = await api.post(
           `/api/writing/projects/${current.project_id}/interview/start`,
@@ -570,9 +637,11 @@ function bindConversation() {
         render();
         toast("已重置访谈");
       } catch (err) { toastError(err); }
-      return undefined;
-    }
-    if (el.closest("#wrExport")) {
+    })();
+    return true;
+  }
+  if (el.closest("#wrExport")) {
+    (async () => {
       try {
         const res = await api.get(`/api/writing/projects/${current.project_id}/export`);
         if (!res.ok) throw new Error(res.error || "导出失败");
@@ -583,17 +652,19 @@ function bindConversation() {
         document.body.appendChild(a); a.click(); a.remove();
         setTimeout(() => URL.revokeObjectURL(url), 2000);
       } catch (err) { toastError(err); }
-      return undefined;
-    }
-    // 只读入口
-    const view = pick("data-view");
-    if (view) return toggleDetail(view, "content");
-    const trace = pick("data-trace");
-    if (trace) return toggleDetail(trace, "trace");
-    return undefined;
-  };
+    })();
+    return true;
+  }
+  const view = attr("data-view");
+  if (view) { toggleDetail(view, "content"); return true; }
+  const trace = attr("data-trace");
+  if (trace) { toggleDetail(trace, "trace"); return true; }
+  return false;
+}
 
-  // 对话滚动到底
+function bindConversation() {
+  // 点击委托已在模块加载时全局安装（见 installGlobalDelegate）；
+  // 这里只做"滚动到底"这类渲染后的副作用，不再承担事件绑定职责。
   const chat = $("#wrChat");
   if (chat) chat.scrollTop = chat.scrollHeight;
 }
