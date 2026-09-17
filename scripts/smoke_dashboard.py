@@ -518,6 +518,125 @@ def main(argv: list[str] | None = None) -> int:
             f"{base}/api/writing/section-jobs/does-not-exist/cancel", {})
         check(cancelled.get("ok") is False, "不存在的作业取消返回明确失败")
 
+        # ---------------- 访谈：唯一的交互节点 + 逐部分闭环（离线） ----------------
+        status, ivp = post(f"{base}/api/writing/projects",
+                           {"title": "访谈冒烟",
+                            "topic": "gold catalysis ynamide annulation"})
+        iv_pid = ivp.get("project_id")
+        status, s = post(f"{base}/api/writing/projects/{iv_pid}/interview/start", {})
+        check(s.get("ok") and (s.get("question") or {}).get("kind") == "intake",
+              "访谈：启动后进入前置问答")
+        check((s["question"] or {}).get("step") == "genre",
+              "访谈：第一个问题问创作类型", str(s.get("question"))[:160])
+        status, s = post(f"{base}/api/writing/projects/{iv_pid}/interview/answer",
+                         {"kind": "intake", "step": "genre",
+                          "value": "experiment_protocol"})
+        check((s["question"] or {}).get("step") == "topic",
+              "访谈：第二个问题问主题", str(s.get("question"))[:160])
+        check(bool((s["question"].get("input") or {}).get("preset")),
+              "访谈：主题预填了项目主题")
+        status, s = post(f"{base}/api/writing/projects/{iv_pid}/interview/answer",
+                         {"kind": "intake", "step": "topic",
+                          "value": "gold catalysis ynamide annulation"})
+        items = (s["question"] or {}).get("items") or []
+        check((s["question"] or {}).get("step") == "sections" and bool(items),
+              "访谈：第三个问题让用户选部分", str(s.get("question"))[:160])
+        check(any(not i.get("generates_body") for i in items),
+              "访谈：不生成正文的部分被标出（如参考文献）")
+        status, s = post(f"{base}/api/writing/projects/{iv_pid}/interview/answer",
+                         {"kind": "intake", "step": "sections",
+                          "value": ["objective", "parameters"]})
+        check(s.get("total") == 2
+              and (s["question"] or {}).get("kind") == "section_choice",
+              "访谈：前置问完即进入逐部分闭环", str(s.get("question"))[:160])
+        check(s.get("next_action") == "draft_options",
+              "访谈：快照告知界面该起作业（拟方案）")
+
+        status, step = post(f"{base}/api/writing/projects/{iv_pid}/interview/step",
+                            offline)
+        check(step.get("action") == "draft_options" and step.get("job_id"),
+              "访谈：推进一步返回作业 id", str(step)[:160])
+        iv_snap = {}
+        for _ in range(60):
+            time.sleep(0.3)
+            status, iv_snap = get(
+                f"{base}/api/writing/section-jobs/{step['job_id']}")
+            if iv_snap.get("status") in ("done", "error", "cancelled"):
+                break
+        check(iv_snap.get("status") == "done", "访谈：拟方案作业完成",
+              f"status={iv_snap.get('status')} err={iv_snap.get('error')}")
+        status, s = get(f"{base}/api/writing/projects/{iv_pid}/interview")
+        opts = (s.get("sections") or [{}])[0].get("options") or []
+        check(len(opts) == 3, "访谈：给出 3 个内容方案", f"got={len(opts)}")
+        check(len({o.get("summary") or "" for o in opts}) == 3,
+              "访谈：3 个方案的摘要彼此不同（不是同一句话的三种说法）")
+
+        status, s = post(f"{base}/api/writing/projects/{iv_pid}/interview/answer",
+                         {"kind": "section_choice", "section_key": "objective",
+                          "choice": "A"})
+        check(s.get("next_action") == "judge", "访谈：选完方案下一步是判定支撑")
+
+        # 通用推进循环：判定 →（可能问缺口）→ 写作，直到第一个部分完成。
+        # 刻意不写死分支：判定可能直接充足（直接进写作），也可能不足（先问缺口），
+        # 早期把两者当成必然走缺口分支，导致"充足"路径没人覆盖。
+        saw_gap_question = False
+        for _ in range(8):
+            status, s = get(f"{base}/api/writing/projects/{iv_pid}/interview")
+            q = s.get("question") or {}
+            first = (s.get("sections") or [{}])[0]
+            if first.get("stage") == "done":
+                break
+            if q.get("kind") == "gap_decision":
+                if not saw_gap_question:
+                    gap_opts = {o.get("id") for o in q.get("options") or []}
+                    check(gap_opts == {"keep_gap", "collect", "custom"},
+                          "访谈：缺口决定给出三条路", str(gap_opts))
+                    collect = next((o for o in q["options"]
+                                    if o.get("id") == "collect"), {})
+                    rounds = collect.get("rounds") or {}
+                    check(rounds.get("default") == 2 and rounds.get("max") == 5,
+                          "访谈：补检轮数默认 2、上限可调", str(rounds))
+                    saw_gap_question = True
+                status, s = post(
+                    f"{base}/api/writing/projects/{iv_pid}/interview/answer",
+                    {"kind": "gap_decision", "section_key": q["section_key"],
+                     "decision": "keep_gap"})
+            if not s.get("next_action"):
+                break
+            status, step = post(
+                f"{base}/api/writing/projects/{iv_pid}/interview/step", offline)
+            if not step.get("job_id"):
+                break
+            for _ in range(80):
+                time.sleep(0.3)
+                status, iv_snap = get(
+                    f"{base}/api/writing/section-jobs/{step['job_id']}")
+                if iv_snap.get("status") in ("done", "error", "cancelled"):
+                    break
+            check(iv_snap.get("status") == "done",
+                  f"访谈：步骤作业完成（{step.get('action')}）",
+                  f"status={iv_snap.get('status')} err={iv_snap.get('error')}")
+
+        status, s = get(f"{base}/api/writing/projects/{iv_pid}/interview")
+        verdict = ((s.get("sections") or [{}])[0]).get("verdict") or {}
+        check(verdict.get("decision") in ("sufficient", "insufficient", "exhausted"),
+              "访谈：判定给出结论", str(verdict.get("decision")))
+        first = (s.get("sections") or [{}])[0]
+        check(first.get("stage") in ("done", "failed_writable"),
+              "访谈：一个部分走完闭环（含写作）", str(first.get("stage")))
+        if first.get("stage") == "done":
+            check(s.get("completed") == 1, "访谈：进度推进到 1/2",
+                  str(s.get("completed")))
+            check((s.get("question") or {}).get("section_key") == "parameters",
+                  "访谈：自动进入下一个部分",
+                  str((s.get("question") or {}).get("section_key")))
+        status, iv_content = get(
+            f"{base}/api/writing/projects/{iv_pid}/sections/objective/content")
+        check(bool(iv_content.get("content")),
+              "访谈：正文已落库（写作由执行链完成）",
+              f"stage={first.get('stage')} err={first.get('error')}")
+        post(f"{base}/api/writing/projects/{iv_pid}", {}, method="DELETE")
+
         # ---------------- 系统状态 ----------------
         status, packs_data = get(f"{base}/api/system/packs")
         check(status == 200 and packs_data["packs"]["loaded"]["skills"].get("writing"),
