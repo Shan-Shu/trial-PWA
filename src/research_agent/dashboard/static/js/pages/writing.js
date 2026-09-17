@@ -695,27 +695,43 @@ async function afterJobFinished(key, box, snap) {
     const invalid = result.invalid_indices || [];
     const unmet = result.unmet_dimensions || [];
     const withGaps = outcome === "written_with_gaps";
+    const verdict = result.sufficiency || {};
+    // 置信度提示必须按**实际数值**判断：带缺口成文时置信度是被闸门封顶的
+    // （低于阈值），写死"阈值以上"就是在说假话。
+    const conf = result.confidence;
+    const thr = verdict.threshold;
+    const above = typeof conf === "number" && typeof thr === "number"
+      ? conf >= thr : null;
+    const confHint = above === null ? "—"
+      : above ? `阈值 ${thr} 以上`
+      : `低于阈值 ${thr}（闸门封顶，已按缺口处理）`;
+    const fromModel = result.generated_by === "llm";
     jobbox.innerHTML = `<div class="card flat">
       ${metrics([
-        ["判定", withGaps ? "带缺口" : "充足", `${result.rounds || 1} 轮`,
+        ["判定", withGaps ? "带缺口" : "充足",
+         `${result.rounds || 1} 轮判定`,
          withGaps ? "warn" : "ok"],
-        ["置信度", String(result.confidence ?? "—"), "阈值以上"],
-        ["来源", result.generated_by === "llm" ? "模型" : "骨架降级",
-         result.generated_by === "llm" ? "" : "未调用模型",
-         result.generated_by === "llm" ? "" : "warn"],
+        ["置信度", String(conf ?? "—"), confHint, above === false ? "amber" : ""],
+        ["来源", fromModel ? "模型" : "骨架降级",
+         fromModel ? "由模型撰写" : "未调用模型（缺 API Key）",
+         fromModel ? "" : "warn"],
       ])}
       ${withGaps ? `<div class="warnbox">⚠ 以下维度未达标，但本部分模板允许带缺口写作：
         <b>${h(unmet.map((d) => DIM_LABELS[d] || d).join("、"))}</b>。
         正文顶部已插入显式标注，标注范围内的推断请勿直接当结论引用。</div>` : ""}
       ${invalid.length ? `<div class="warnbox">⚠ 正文含 <b>${h(invalid.length)}</b> 处越界引文编号
         （${h(invalid.join("、"))}）——模型引用了素材清单外的来源，请核对后再用。</div>` : ""}
+      ${fromModel ? "" : `<div class="muted" style="font-size:11.5px;margin-top:6px">
+        未调用模型的原因：${h(result.model_error
+          || (snap.result || {}).model_error || "未配置 API Key")}。
+        骨架降级只是**如实标注**，不是判定失败——判定本身不依赖模型。</div>`}
       <div class="muted" style="font-size:11.5px;margin-top:6px">
         模板 <code>${h(result.template_key || "—")}</code>
         · ${h(result.work_plan_mode === "user" ? "按你的指令" : "系统自拟")}
         · 已写入正文，决策轨迹可点「决策轨迹」查看。</div>
     </div>`;
-    toast(result.generated_by === "llm" ? "已生成正文" : "已生成骨架草稿（未调用模型）",
-          result.generated_by === "llm" ? "info" : "warn");
+    toast(fromModel ? "已生成正文" : "已生成骨架草稿（未调用模型）",
+          fromModel ? "info" : "warn");
   } else if (outcome === "needs_data") {
     jobbox.innerHTML = renderNeedsData(result);
     const rerun = jobbox.querySelector('[data-act="rerun"]');

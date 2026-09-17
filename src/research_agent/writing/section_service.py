@@ -370,6 +370,7 @@ def run_section_workflow(
                 "confidence": verdict.get("confidence"),
                 "rounds": round_no,
                 "generated_by": composed.get("generated_by"),
+                "model_error": composed.get("model_error") or "",
                 "invalid_indices": composed.get("invalid_indices") or [],
                 "unmet_dimensions": unmet,
                 "evidence_types": verdict.get("evidence_types") or [],
