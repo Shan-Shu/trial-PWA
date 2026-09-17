@@ -1,0 +1,13 @@
+{
+  "name": "research-agent-frontend-checks",
+  "private": true,
+  "version": "0.0.0",
+  "description": "前端校验工具链（模块加载冒烟 + headless 浏览器交互冒烟）。不参与 Python 打包，仅本机/CI 用于验证 Web GUI。",
+  "scripts": {
+    "smoke:modules": "node scripts/frontend_smoke.mjs src/research_agent/dashboard/static",
+    "smoke:browser": "node scripts/browser_smoke.mjs"
+  },
+  "devDependencies": {
+    "playwright-core": "^1.49.0"
+  }
+}

@@ -28,6 +28,22 @@ let snap = null;
 let busy = false;
 let pollTimer = null;
 
+/** 离线开关：hash 里带 `offline=1` 时不注入任何模型（拟方案走通用方向、成段走骨架）。
+ *
+ * 存在的理由：浏览器交互冒烟必须**可复现且快**——真实模型（v4-pro）拟 3 个方案
+ * 可能要几十秒到几分钟，把回归验证变成看运气。生产默认仍是联网用模型。
+ *
+ * 读 **hash** 而不是 search：这个 SPA 用 hash 路由（`#writing`），
+ * `?offline=1` 在页面切换时会被丢掉（实测发现）。
+ */
+const OFFLINE = (() => {
+  try {
+    return new URLSearchParams(location.hash.split("?")[1] || "").get("offline") === "1";
+  } catch {
+    return false;
+  }
+})();
+
 /** 各阶段的用户可读文案 */
 const STAGE_LABEL = {
   pending: "待访谈",
@@ -159,22 +175,28 @@ async function enterProject(projectId, { start = false } = {}) {
     if (!detail.ok) throw new Error(detail.error || "项目不存在");
     current = detail.project;
     await loadSnapshot({ start });
+    if (!snap || !snap.ok) {
+      // 静默什么都不显示会让交互"点了没反应"——把原因显式说出来
+      const msg = (snap && snap.error) || "访谈状态读取失败";
+      toastError(new Error(msg));
+      renderPicker();
+      return;
+    }
     render();
-  } catch (err) { toastError(err); }
+  } catch (err) {
+    console.error("[writing] 进入项目失败", err);
+    toastError(err);
+    renderPicker();
+  }
 }
 
 // ------------------------------------------------------------------ 访谈数据
 
 async function loadSnapshot({ start = false } = {}) {
-  try {
-    snap = await api.get(`/api/writing/projects/${current.project_id}/interview`);
-    if (start || !snap || !snap.ok) {
-      snap = await api.post(
-        `/api/writing/projects/${current.project_id}/interview/start`, {});
-    }
-  } catch (err) {
-    snap = null;
-    toastError(err);
+  snap = await api.get(`/api/writing/projects/${current.project_id}/interview`);
+  if (start || !snap || !snap.ok) {
+    snap = await api.post(
+      `/api/writing/projects/${current.project_id}/interview/start`, {});
   }
 }
 
@@ -200,7 +222,8 @@ async function answerAndAdvance(payload) {
 
 async function runStep() {
   const res = await api.post(
-    `/api/writing/projects/${current.project_id}/interview/step`, {});
+    `/api/writing/projects/${current.project_id}/interview/step`,
+    { use_model: !OFFLINE });
   if (!res.ok) throw new Error(res.error || "无法推进");
   if (!res.job_id) { await loadSnapshot(); return; }
   setProgress("正在处理…");
@@ -281,9 +304,14 @@ function renderConversation() {
       <span class="chat-role">${h(m.role === "user" ? "你" : "AI")}</span>
       <div class="chat-text">${h(m.text)}</div>
     </div>`).join("");
+  // 注意：renderQuestion() 返回的是**已由 h() 逐值转义**的 HTML 片段。
+  // 它在 render() 里也有同名局部变量；两处必须各自计算，不能跨函数引用
+  // （曾因此在浏览器里抛 ReferenceError: questionHtml is not defined——
+  //  静态检查/HTTP 冒烟都发现不了，只有真浏览器能抓到）。
+  const inputHtml = renderQuestion();
   return card(`
     <div class="chat-flow" id="wrChat">${historyHtml || '<div class="muted">还没有对话</div>'}</div>
-    <div class="chat-input" id="wrInput">${questionHtml}</div>`,
+    <div class="chat-input" id="wrInput">${inputHtml}</div>`,
     { title: "工作规划节点", subtitle: "整页只有这一个可交互区" });
 }
 
@@ -455,112 +483,115 @@ function renderSections() {
 // ------------------------------------------------------------------ 交互
 
 function bindConversation() {
-  const input = $("#wrInput");
-  if (!input) return;
+  // 用**事件委托**绑在持久容器上，而不是逐个按钮绑在会被重建的子节点上。
+  // 为什么：render() 会整块替换 #wrBody，若绑定的是那一刻查到的子元素，
+  // 而 DOM 里存在的其实是另一个同类元素（曾经 #wrInput 被创建过两次），
+  // 就会出现"按钮看得见、点了毫无反应、也不报错"——实测踩过这个坑，
+  // 只有真浏览器能发现（HTTP 与静态检查都看不见）。
+  const root = $("#wrBody");
+  if (!root) return;
 
-  const q = snap.question || {};
+  root.onclick = async (event) => {
+    const el = event.target instanceof Element ? event.target : null;
+    if (!el) return;
+    const pick = (attr) => el.closest(`[${attr}]`)?.getAttribute(attr);
+    const q = snap.question || {};
 
-  // 前置：体裁
-  input.querySelectorAll("[data-genre]").forEach((btn) => {
-    btn.onclick = () => answerAndAdvance(
-      { kind: "intake", step: "genre", value: btn.dataset.genre });
-  });
-  // 前置：主题
-  $("#wrTopicOk")?.addEventListener("click", () => {
-    const value = $("#wrTopicInput")?.value.trim();
-    if (!value) { toast("请填写主题", "warn"); return; }
-    answerAndAdvance({ kind: "intake", step: "topic", value });
-  });
-  // 前置：部分
-  $("#wrSectionsOk")?.addEventListener("click", () => {
-    const picked = [...input.querySelectorAll("[data-section]:checked")]
-      .map((el) => el.dataset.section);
-    if (!picked.length) { toast("至少要选一个部分", "warn"); return; }
-    answerAndAdvance({ kind: "intake", step: "sections", value: picked });
-  });
-  // 部分：选方案 / 让 AI 定 / 自己写
-  input.querySelectorAll("[data-choice]").forEach((btn) => {
-    btn.onclick = () => answerAndAdvance({
-      kind: "section_choice", section_key: q.section_key,
-      choice: btn.dataset.choice,
-    });
-  });
-  $("#wrSelfOk")?.addEventListener("click", () => {
-    const text = $("#wrSelfText")?.value.trim();
-    if (!text) { toast("请先写下内容", "warn"); return; }
-    answerAndAdvance({
-      kind: "section_choice", section_key: q.section_key,
-      choice: "self", text,
-    });
-  });
-  // 缺口决定
-  $("#wrGapOk")?.addEventListener("click", () => {
-    const picked = input.querySelector('[name="gap"]:checked')?.value || "keep_gap";
-    const payload = { kind: "gap_decision", section_key: q.section_key,
-                      decision: picked };
-    if (picked === "collect") {
-      payload.rounds = $("#wrRoundsAi")?.checked
-        ? "ai" : ($("#wrRounds")?.value || 2);
+    // 前置：体裁
+    const genre = pick("data-genre");
+    if (genre) return answerAndAdvance({ kind: "intake", step: "genre", value: genre });
+
+    // 前置：主题
+    if (el.closest("#wrTopicOk")) {
+      const value = $("#wrTopicInput")?.value.trim();
+      if (!value) { toast("请填写主题", "warn"); return; }
+      return answerAndAdvance({ kind: "intake", step: "topic", value });
     }
-    if (picked === "custom") {
-      const text = $("#wrCustomText")?.value.trim();
-      if (!text) { toast("自定义任务需要写一句说明", "warn"); return; }
-      payload.text = text;
+    // 前置：部分
+    if (el.closest("#wrSectionsOk")) {
+      const picked = [...root.querySelectorAll("[data-section]:checked")]
+        .map((node) => node.dataset.section);
+      if (!picked.length) { toast("至少要选一个部分", "warn"); return; }
+      return answerAndAdvance({ kind: "intake", step: "sections", value: picked });
     }
-    answerAndAdvance(payload);
-  });
-  // 自定义方案
-  $("#wrCustomOk")?.addEventListener("click", () => {
-    const picked = input.querySelector('[name="cplan"]:checked')?.value;
-    if (!picked) { toast("请选一个方案", "warn"); return; }
-    answerAndAdvance({ kind: "custom_plan", section_key: q.section_key,
-                       choice: picked });
-  });
-  $("#wrRefineOk")?.addEventListener("click", () => {
-    const text = $("#wrRefineText")?.value.trim();
-    if (!text) { toast("请写出要补充的说明", "warn"); return; }
-    answerAndAdvance({ kind: "custom_plan", section_key: q.section_key,
-                       choice: "refine", text });
-  });
-
-  // 头部动作
-  $("#wrSwitch")?.addEventListener("click", () => {
-    stopPolling();
-    current = null;
-    snap = null;
-    refresh();
-  });
-  $("#wrRestart")?.addEventListener("click", async () => {
-    if (!window.confirm("重新访谈会清空本次问答进度（已写好的正文保留），继续？")) return;
-    try {
-      snap = await api.post(
-        `/api/writing/projects/${current.project_id}/interview/start`,
-        { reset: true });
-      render();
-      toast("已重置访谈");
-    } catch (err) { toastError(err); }
-  });
-  $("#wrExport")?.addEventListener("click", async () => {
-    try {
-      const res = await api.get(
-        `/api/writing/projects/${current.project_id}/export`);
-      if (!res.ok) throw new Error(res.error || "导出失败");
-      const blob = new Blob([res.content], { type: res.mime });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url; a.download = res.filename;
-      document.body.appendChild(a); a.click(); a.remove();
-      setTimeout(() => URL.revokeObjectURL(url), 2000);
-    } catch (err) { toastError(err); }
-  });
-
-  // 只读入口
-  host.querySelectorAll("[data-view]").forEach((btn) => {
-    btn.onclick = () => toggleDetail(btn.dataset.view, "content");
-  });
-  host.querySelectorAll("[data-trace]").forEach((btn) => {
-    btn.onclick = () => toggleDetail(btn.dataset.trace, "trace");
-  });
+    // 部分：选方案 / 让 AI 定 / 我自己写
+    const choice = pick("data-choice");
+    if (choice) {
+      return answerAndAdvance({ kind: "section_choice",
+                                section_key: q.section_key, choice });
+    }
+    if (el.closest("#wrSelfOk")) {
+      const text = $("#wrSelfText")?.value.trim();
+      if (!text) { toast("请先写下内容", "warn"); return; }
+      return answerAndAdvance({ kind: "section_choice", section_key: q.section_key,
+                                choice: "self", text });
+    }
+    // 缺口决定
+    if (el.closest("#wrGapOk")) {
+      const decided = root.querySelector('[name="gap"]:checked')?.value || "keep_gap";
+      const payload = { kind: "gap_decision", section_key: q.section_key,
+                        decision: decided };
+      if (decided === "collect") {
+        payload.rounds = $("#wrRoundsAi")?.checked ? "ai" : ($("#wrRounds")?.value || 2);
+      }
+      if (decided === "custom") {
+        const text = $("#wrCustomText")?.value.trim();
+        if (!text) { toast("自定义任务需要写一句说明", "warn"); return; }
+        payload.text = text;
+      }
+      return answerAndAdvance(payload);
+    }
+    // 自定义方案
+    if (el.closest("#wrCustomOk")) {
+      const picked = root.querySelector('[name="cplan"]:checked')?.value;
+      if (!picked) { toast("请选一个方案", "warn"); return; }
+      return answerAndAdvance({ kind: "custom_plan", section_key: q.section_key,
+                                choice: picked });
+    }
+    if (el.closest("#wrRefineOk")) {
+      const text = $("#wrRefineText")?.value.trim();
+      if (!text) { toast("请写出要补充的说明", "warn"); return; }
+      return answerAndAdvance({ kind: "custom_plan", section_key: q.section_key,
+                                choice: "refine", text });
+    }
+    // 头部动作
+    if (el.closest("#wrSwitch")) {
+      stopPolling();
+      current = null;
+      snap = null;
+      return refresh();
+    }
+    if (el.closest("#wrRestart")) {
+      if (!window.confirm("重新访谈会清空本次问答进度（已写好的正文保留），继续？")) return;
+      try {
+        snap = await api.post(
+          `/api/writing/projects/${current.project_id}/interview/start`,
+          { reset: true });
+        render();
+        toast("已重置访谈");
+      } catch (err) { toastError(err); }
+      return undefined;
+    }
+    if (el.closest("#wrExport")) {
+      try {
+        const res = await api.get(`/api/writing/projects/${current.project_id}/export`);
+        if (!res.ok) throw new Error(res.error || "导出失败");
+        const blob = new Blob([res.content], { type: res.mime });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url; a.download = res.filename;
+        document.body.appendChild(a); a.click(); a.remove();
+        setTimeout(() => URL.revokeObjectURL(url), 2000);
+      } catch (err) { toastError(err); }
+      return undefined;
+    }
+    // 只读入口
+    const view = pick("data-view");
+    if (view) return toggleDetail(view, "content");
+    const trace = pick("data-trace");
+    if (trace) return toggleDetail(trace, "trace");
+    return undefined;
+  };
 
   // 对话滚动到底
   const chat = $("#wrChat");

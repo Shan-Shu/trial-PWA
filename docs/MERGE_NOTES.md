@@ -283,7 +283,27 @@ uv run python scripts/smoke_dashboard.py             # 119 项端到端 HTTP
 
 # 4b. 前端接口与后端路由是否配得上（错配只会在点击时 404）
 uv run python scripts/check_frontend_routes.py
+
+# 4c. 浏览器交互冒烟（headless，需要 Node 侧依赖；见下）
+npm install            # 只装 playwright-core，不下载浏览器
+node scripts/browser_smoke.mjs            # 自起服务 + 临时库
+node scripts/browser_smoke.mjs --base http://127.0.0.1:8000   # 复用已有服务
 ```
+
+### 浏览器交互冒烟（headless）
+
+前三层都验不到「点下去会不会炸」——DOM 事件绑定、选择器拼写、渲染顺序、作用域
+这些只有真浏览器能验。`scripts/browser_smoke.mjs` 用 Playwright 驱动 **本机已有的 Edge**
+（`channel: "msedge"`，不额外下载浏览器），跑一遍写作台并留下截图：
+
+- 输出：`data/browser-shots/*.png`（已被 gitignore），失败时的现场在 `98-stuck.png`
+- 收集 **页面异常与 console.error**，任一出现即判失败
+- 用 `#writing?offline=1` 走**离线模式**：拟方案走通用方向、成段走骨架。
+  浏览器冒烟必须快且可复现，否则每步等真实模型（v4-pro 拟 3 案可能几分钟）
+  就没法当回归用
+
+它已经抓到过三类前三层完全看不见的真实缺陷：`questionHtml` 跨函数引用（ReferenceError）、
+属性选择器拼错、以及**事件绑定绑到了被重建的旧元素上**（按钮看得见、点了毫无反应、还不报错）。
 
 # 5.（可选）在**正在运行的服务**上核对节点工作流，并打印界面会看到的内容
 #     先起服务，再执行；脚本会建一个临时项目、跑完整链路、最后删掉

@@ -28,5 +28,9 @@ data/
 assets/
 output/
 
+# Node 侧校验工具链（headless 浏览器冒烟）：依赖不入库，package.json 入库
+node_modules/
+npm-debug.log*
+
 # 会话附件（由 agent 会话上传的原始文档，不入库）
 .dsh-attachments/
