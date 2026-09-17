@@ -151,6 +151,24 @@ def _load_work_plan(conn: sqlite3.Connection,
     return data if isinstance(data, dict) else {}
 
 
+def _study_services_with_collector(settings: Settings) -> StudyServices:
+    """构造带采集器的 StudyServices（补检才能真正抓文献）。
+
+    不接采集器的后果（实测）：collection 节点走 ``collection_skipped`` 分支，
+    返回 ``{"count": 0, "reason": "未配置 collector，使用本地已有知识"}``，
+    判定永远是"不足"，用户点多少次"补检"都不会有变化。
+    """
+    from research_agent.writing.collaboration import build_retrieval_collector
+    try:
+        collector = build_retrieval_collector(settings)
+    except Exception as exc:  # noqa: BLE001 —— 检索栈构建失败不该让写作彻底不可用
+        logger.warning("采集器构建失败，补检将不可用: %s", exc)
+        collector = None
+    base = StudyServices.from_env(require_llms=False)
+    base.collector = collector
+    return base
+
+
 # ------------------------------------------------------------------ 作业体
 
 def run_section_workflow(
@@ -168,11 +186,22 @@ def run_section_workflow(
     compose_model_reason: str = "",
     progress_cb: Any = None,
     cancel_event: threading.Event | None = None,
+    skip_judgement: bool = False,
+    use_model: bool = True,
 ) -> dict[str, Any]:
     """作业体：跑一次部分写作链并落库。可被 ``LibraryJobManager.start`` 驱动。
 
     ``instruction`` 与 ``user_fields`` 都是**可选**：
     两者都空时走"系统自拟"——由工作规划节点与部分模板决定这一部分写什么。
+
+    ``skip_judgement=True``：调用方（访谈闭环）**已经判过支撑**，只需写作。
+    开启后会在采集之外再跳过判定节点，避免"补检+复判"跑第二遍——
+    判定做两遍不仅重复，第二遍还会因为 collector 已接上而真的发起检索，
+    把一个本该几十秒的写作步骤拖到数分钟（实测浏览器冒烟 240s 超时）。
+
+    ``use_model=False``（离线/回归）：**不构建任何模型**。此前只挡住了成段模型，
+    规划与消费节点仍会各自自动构建真模型，于是"离线"冒烟照样联网、
+    慢到超时（实测 outcome=running 卡住）。
     """
     s = settings or default_settings
     path = db_path if db_path is not None else s.db_path
@@ -236,7 +265,24 @@ def run_section_workflow(
         planning_request = build_section_request(project, heading, instruction,
                                                  section_heading_note)
 
-        services = services or StudyServices.from_env(require_llms=False)
+        # **必须接上采集器**：StudyServices 默认 collector=None 时，
+        # make_collection_node 直接返回 collection_skipped——判定说"不足"、
+        # 用户选"补检"，结果一篇都没抓，链路原地打转
+        # （数据库里有 collection_skipped 记录为证）。写作台此前漏了这一步。
+        # 但访谈闭环已判过支撑时（skip_judgement）不该再补检，故此时不接采集器。
+        services = services or (
+            StudyServices.from_env(require_llms=False) if skip_judgement
+            else _study_services_with_collector(s))
+
+        if not use_model:
+            # 离线：把三个角色模型显式清空，避免节点内部再各自自动构建
+            services.planner_model = None
+            services.consumer_model = None
+            services.collector = None
+            planner_model = None
+            consumer_model = None
+            compose_model = None
+            compose_model_reason = compose_model_reason or "调用方显式要求不使用模型（离线）"
 
         if compose_model is None and not compose_model_reason:
             compose_model, compose_model_reason = default_model(s)
@@ -283,6 +329,7 @@ def run_section_workflow(
             compose_model=compose_model,
             compose_model_reason=compose_model_reason,
             on_round=on_round,
+            skip_judgement=skip_judgement,
         )
         initial: dict[str, Any] = {
             "run_id": run_id,
@@ -447,6 +494,7 @@ def start_section_run(
     consumer_model: Any = None,
     compose_model: Any = None,
     compose_model_reason: str = "",
+    use_model: bool = True,
 ) -> str:
     """启动一次部分写作作业，立即返回 ``job_id``。"""
     manager = ManagerForSections(db_path)
@@ -464,6 +512,7 @@ def start_section_run(
         consumer_model=consumer_model,
         compose_model=compose_model,
         compose_model_reason=compose_model_reason,
+        use_model=use_model,
         total=1,
     )
 

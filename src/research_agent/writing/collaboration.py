@@ -31,7 +31,56 @@ from research_agent.writing import interview as iv
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["run_collaboration"]
+__all__ = ["run_collaboration", "build_retrieval_services", "build_retrieval_collector"]
+
+
+def build_retrieval_services(settings: Settings | None = None) -> Any:
+    """构造**能真正检索**的 pipeline 服务栈。
+
+    为什么必须有这个函数：写作台此前直接用裸 ``Services()``（三个模型都是 None），
+    或干脆没配 collector —— 两条路都会让"补检"变成空转：
+
+    - 没配 collector → ``make_collection_node`` 返回 ``collection_skipped``，
+      看着"流程走完了"，实际一篇都没抓（数据库里有 ``collection_skipped`` 记录）；
+    - 裸 ``Services()`` → 检索能跑，但质量评估与知识抽取没有模型，
+      抓回来的文献落不了库、更成不了可引用证据。
+
+    照上游 CLI 的做法注入 ApiHub + retriever/quality/knowledge 三个模型。
+    """
+    from research_agent.pipeline import Services as PipelineServices
+    from research_agent.retrieval.api_clients import ApiHub
+
+    s = settings or default_settings
+    services = PipelineServices(api=ApiHub(), settings=s)
+    for attr, role in (("retriever_model", "retriever"),
+                       ("quality_model", "quality"),
+                       ("knowledge_model", "knowledge")):
+        try:
+            from research_agent.models import build_role_model
+            setattr(services, attr, build_role_model(role))
+        except Exception as exc:  # noqa: BLE001 —— 缺 Key 是预期情况
+            logger.warning("检索链路角色 %s 未绑定模型: %s", role, exc)
+    return services
+
+
+def build_retrieval_collector(settings: Settings | None = None) -> Any:
+    """给 ``StudyServices.collector`` 用的采集器（**惰性构建**）。
+
+    惰性很重要：构建 ApiHub 与三个角色模型并不便宜，而绝大多数写作步骤
+    根本走不到采集那一步。若在每次 run_section_workflow 里立刻建好，
+    连"判定充足、直接成段"的正常路径也要白付这份成本——
+    实测这样会让冒烟里的写作步骤从秒级变成几十秒。
+    """
+    from research_agent.study.collection import collect_mission
+
+    state: dict[str, Any] = {}
+
+    def collector(request: dict[str, Any]) -> dict[str, Any]:
+        if "services" not in state:
+            state["services"] = build_retrieval_services(settings)
+        return collect_mission(request, services=state["services"])
+
+    return collector
 
 
 def run_collaboration(
@@ -135,13 +184,14 @@ def _do_retrieve(conn: sqlite3.Connection, *, section_key: str,
     **收敛保护**：某轮新增为 0 时，下一轮若仍为 0 就停止。
     """
     from research_agent.study.collection import collect_mission
-    from research_agent.pipeline import Services
 
     terms = [str(q) for q in queries if str(q).strip()][:6]
     if not terms:
         terms = ["research"]     # 兜底，避免空检索词
     request = {"seed_terms": terms, "reason": f"访谈协作：{section_key}"}
-    services = Services()
+    # **必须用注入模型的 services**：裸 Services() 会让质量评估与知识抽取没有模型，
+    # 抓回来的文献成不了可引用证据（实测：裸 Services 能抓到 3 篇，但只到"入库"）
+    services = build_retrieval_services(settings)
     added_total = 0
     rounds_done = 0
     steps: list[dict[str, Any]] = []
@@ -195,7 +245,7 @@ def _do_extract(conn: sqlite3.Connection, *, scope: str,
     - ``scope == "new"``：只抽本次新增的文献；
     - ``scope == "existing"``：抽库内**同主题**的既有文献（常见瓶颈是"有文献但没抽"）。
     """
-    from research_agent.pipeline import Services, process_papers
+    from research_agent.pipeline import process_papers
 
     if scope == "new":
         targets = added_keys[:20]
@@ -208,7 +258,7 @@ def _do_extract(conn: sqlite3.Connection, *, scope: str,
                     "count": 0, "note": "没有可抽取的目标文献"}]
 
     _progress(progress_cb, 70.0, f"正在抽取 {len(targets)} 篇文献的知识…")
-    services = Services()
+    services = build_retrieval_services(settings)
     ok = 0
     for index, key in enumerate(targets, 1):
         _progress(progress_cb, 70.0 + 20.0 * index / max(1, len(targets)),

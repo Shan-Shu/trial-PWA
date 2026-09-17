@@ -150,6 +150,7 @@ def compose_section(db_path: str | Path | None, project_id: int, section_key: st
             db_path=path, settings=settings,
             compose_model=compose_model,
             compose_model_reason=compose_reason,
+            use_model=use_model,
         )
     except ValueError as exc:
         return {"ok": False, "error": str(exc)}

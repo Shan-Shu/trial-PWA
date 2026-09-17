@@ -165,6 +165,7 @@ def build_section_graph(
     compose_model_reason: str = "",
     services: StudyServices | None = None,
     on_round: Callable[[dict[str, Any]], None] | None = None,
+    skip_judgement: bool = False,
 ):
     """构建单个大纲节点的写作链。
 
@@ -312,13 +313,18 @@ def build_section_graph(
                        and state.get("status") == "planned" else "end"),
         {"sufficiency": "sufficiency", "end": END},
     )
-    g.add_conditional_edges(
-        "sufficiency", _route_after_sufficiency,
-        {"collection": "collection",
-         "knowledge_consumer": "knowledge_consumer",
-         "end": END},
-    )
-    g.add_edge("collection", "sufficiency")
+    if skip_judgement:
+        # 访谈闭环已经判过支撑：这里只做规划 → 消费 → 成段。
+        # 再判一次不仅重复，还会因为 collector 已接上而真的发起检索。
+        g.add_edge("sufficiency", "knowledge_consumer")
+    else:
+        g.add_conditional_edges(
+            "sufficiency", _route_after_sufficiency,
+            {"collection": "collection",
+             "knowledge_consumer": "knowledge_consumer",
+             "end": END},
+        )
+        g.add_edge("collection", "sufficiency")
     g.add_edge("knowledge_consumer", "section_compose")
     g.add_edge("section_compose", END)
     return g.compile()

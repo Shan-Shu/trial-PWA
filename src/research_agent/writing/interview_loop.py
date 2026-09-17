@@ -267,6 +267,9 @@ def _do_write(db: sqlite3.Connection, project_id: int,
         compose_model=compose_model,
         compose_model_reason=compose_model_reason,
         progress_cb=progress_cb,
+        # 访谈闭环已经判过支撑（sec.verdict）：让执行链只做消费+成段，
+        # 不再重复判定、也不再发起第二遍补检（那会把写作拖到数分钟）
+        skip_judgement=True,
     )
     status = str(result.get("status") or "")
     if status in ("written", "written_with_gaps"):

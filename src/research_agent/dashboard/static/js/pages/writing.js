@@ -26,6 +26,8 @@ let projects = [];
 let current = null;
 let snap = null;
 let busy = false;
+/** 正在推进一次作答（含轮询作业）；此期间禁止自动刷新抢占 */
+let isAdvancing = false;
 let pollTimer = null;
 
 /** 离线开关：hash 里带 `offline=1` 时不注入任何模型（拟方案走通用方向、成段走骨架）。
@@ -91,6 +93,9 @@ export const writingPage = {
   },
 
   async refresh() {
+    // **步骤进行中不刷新**：shell 每 30 秒会调一次 refresh，它会重绘并重置
+    // 输入区，把正在进行的作答打断——用户看到的正是"点了没反应 / 选项不消失"。
+    if (isAdvancing) return;
     if (current) {
       await loadSnapshot();
       render();
@@ -225,6 +230,7 @@ async function answerAndAdvance(payload) {
     return;
   }
   busy = true;
+  isAdvancing = true;
   inFlightKey = key;
   console.info("[writing] 提交作答", key, JSON.stringify(payload));
   // **先**把上一题的选项收掉：否则模型慢的时候（实测成段要 40s+），
@@ -250,6 +256,7 @@ async function answerAndAdvance(payload) {
   } finally {
     busy = false;
     inFlightKey = "";
+    isAdvancing = false;
   }
 }
 
