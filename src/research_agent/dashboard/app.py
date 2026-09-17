@@ -175,6 +175,28 @@ def create_app(db_path: str | Path | None = None,
         finally:
             conn.close()
 
+    @app.post("/api/dispatches/parse")
+    def parse_dispatch(request: Request, payload: dict = Body(...)) -> dict:
+        """自然语言指令 → 3 个可直接派工的方案（**不执行**）。
+
+        派工链路里缺的一层翻译：用户说的话与可执行的任务单之间。方案生成后由
+        界面让用户选一个（或让 AI 决定），再调 `POST /api/dispatches` 真正下单。
+        """
+        from research_agent.writing import dispatch_planner as dpl
+
+        request_text = str(payload.get("request") or "").strip()
+        if not request_text:
+            return {"ok": False, "error": "request 为空"}
+        return dpl.build_dispatch_plan(
+            request=request_text, db_path=request.app.state.db_path,
+            project_id=int(payload.get("project_id") or 0),
+            section_key=str(payload.get("section_key") or ""),
+            topic=str(payload.get("topic") or ""),
+            heading=str(payload.get("heading") or ""),
+            verdict=payload.get("verdict") or {},
+            use_model=bool(payload.get("use_model", True)),
+            settings=request.app.state.settings)
+
     @app.post("/api/dispatches")
     def create_dispatch(request: Request, payload: dict = Body(...)) -> dict:
         """下一张派工单，**同步执行**后返回结果。

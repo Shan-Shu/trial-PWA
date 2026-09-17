@@ -28,6 +28,9 @@ let snap = null;
 let busy = false;
 /** 正在推进一次作答（含轮询作业）；此期间禁止自动刷新抢占 */
 let isAdvancing = false;
+/** 「对节点下指令」面板的本地状态（解析结果与最近一次派工） */
+let directive = { text: "", plans: [], note: "", parsed_by: "", error: "",
+                  dispatched: null };
 let pollTimer = null;
 
 /** 离线开关：hash 里带 `offline=1` 时不注入任何模型（拟方案走通用方向、成段走骨架）。
@@ -319,9 +322,59 @@ function render() {
     ${renderHeader()}
     <div class="grid-2" style="margin-top:12px;align-items:start">
       <div>${conversationHtml}</div>
-      <div>${sectionsHtml}</div>
+      <div>${sectionsHtml}${renderDirective()}</div>
     </div>`;
   bindConversation();
+}
+
+/** 对任意节点下指令：自然语言 → 3 个方案 → 下单。
+ *
+ * 这是方案 v8 里唯一的"直下指令"入口。它与访谈的缺口决定共用同一条派工执行链，
+ * 区别只在**来源**：这里是 `user_direct`，访谈补检是 `gap_decision`。
+ * 形态刻意做成"随时可用的小面板"，而不是访谈状态机的一个阶段——否则用户必须
+ * 先把当前部分答完才能下单。
+ */
+function renderDirective() {
+  const plans = directive.plans || [];
+  const plansHtml = plans.map((plan) => {
+    const stepsHtml = (plan.plan || []).map((s) => `
+      <div class="muted" style="font-size:11px">
+        ${h(s.task)} @ ${h(s.node)}${s.skip_reason
+          ? ` · <b>将跳过</b>：${h(s.skip_reason)}` : ""}
+      </div>`).join("");
+    return `
+    <div class="card flat" style="margin-top:8px">
+      <div class="row" style="justify-content:space-between">
+        <b style="font-size:12.5px">方案${h(plan.id)}：${h(plan.label)}</b>
+        <button class="btn small" data-dispatch-plan="${h(plan.id)}">执行</button>
+      </div>
+      <div class="muted" style="font-size:11.5px;margin-top:3px">${h(plan.hint || "")}</div>
+      <div class="stack" style="margin-top:4px">${stepsHtml}</div>
+    </div>`;
+  }).join("");
+
+  return card(`
+    <div class="muted" style="font-size:11.5px">
+      用你自己的话说要补什么（例：<i>把所有 ynamide 文献抽成知识</i>），
+      我会解析成可执行的派工方案。</div>
+    <div class="row tight" style="margin-top:8px">
+      <input id="wrDirectText" class="input" style="flex:1;min-width:160px"
+             placeholder="对某个节点下指令…" value="${h(directive.text || "")}">
+      <button class="btn small" id="wrDirectParse">解析</button>
+    </div>
+    ${directive.note ? `<div class="muted" style="font-size:11px;margin-top:6px">
+      ${h(directive.note)}（来源：${directive.parsed_by === "llm" ? "模型解析" : "确定性兜底"}）</div>` : ""}
+    ${directive.error ? `<div class="warnbox" style="margin-top:6px">${h(directive.error)}</div>` : ""}
+    ${plansHtml}
+    ${plans.length ? `<div class="row tight" style="margin-top:8px">
+      <button class="btn small primary" data-dispatch-plan="ai">让 AI 自己决定（取覆盖面最广的方案）</button>
+    </div>` : ""}
+    ${directive.dispatched ? `<div class="muted" style="font-size:11.5px;margin-top:8px">
+      派工单 ${h(directive.dispatched.dispatch_id)}：${h(directive.dispatched.status)}
+      ${(directive.dispatched.steps || []).map((s) =>
+        `${h(s.task)}→${h(s.status)}`).join("、")}</div>` : ""}`,
+    { flat: true, title: "对节点下指令",
+      subtitle: "派工由工作规划节点下单，执行与回报见「研究流程」页" });
 }
 
 /** 清空当前输入区：用户答完立刻把上一题的选项收掉。
@@ -707,7 +760,77 @@ function handlePanelClick(el, event) {
   if (view) { toggleDetail(view, "content"); return true; }
   const trace = attr("data-trace");
   if (trace) { toggleDetail(trace, "trace"); return true; }
+  if (el.closest("#wrDirectParse")) {
+    parseDirective();
+    return true;
+  }
+  const planId = attr("data-dispatch-plan");
+  if (planId) {
+    dispatchDirective(planId);
+    return true;
+  }
   return false;
+}
+
+/** 解析自然语言指令 → 3 个方案（不执行）。 */
+async function parseDirective() {
+  const text = (document.getElementById("wrDirectText")?.value || "").trim();
+  if (!text) { toast("先写下你要做什么", "warn"); return; }
+  directive = { ...directive, text, error: "", plans: [] };
+  isAdvancing = true;          // 解析可能要几十秒（模型），期间别让自动刷新重绘
+  try {
+    const res = await api.post("/api/dispatches/parse", {
+      request: text,
+      project_id: current.project_id,
+      topic: snap?.intake?.topic || "",
+      use_model: !OFFLINE,
+    });
+    if (!res.ok) throw new Error(res.error || "解析失败");
+    directive = {
+      text, plans: res.plans || [], note: res.note || "",
+      parsed_by: res.parsed_by || "", error: "",
+      dispatched: directive.dispatched,
+    };
+    toast(`解析出 ${directive.plans.length} 个方案`);
+  } catch (err) {
+    directive = { ...directive, error: String(err.message || err) };
+    toastError(err);
+  } finally {
+    isAdvancing = false;
+    render();
+  }
+}
+
+/** 选定方案并下单（"让 AI 决定" = 取步骤最多的方案，覆盖面最广）。 */
+async function dispatchDirective(planId) {
+  const plans = directive.plans || [];
+  if (!plans.length) return;
+  const picked = planId === "ai"
+    ? plans.reduce((best, p) =>
+        (p.plan || []).length > (best.plan || []).length ? p : best, plans[0])
+    : plans.find((p) => String(p.id) === String(planId));
+  if (!picked) { toast("没找到这个方案", "warn"); return; }
+  isAdvancing = true;
+  directive = { ...directive, error: "" };
+  try {
+    const res = await api.post("/api/dispatches", {
+      plan: picked.plan,
+      project_id: current.project_id,
+      section_key: snap?.question?.section_key || "",
+      origin: "user_direct",
+      reason: directive.text,
+      use_model: !OFFLINE,
+    });
+    if (!res.ok) throw new Error(res.error || "派工失败");
+    directive = { ...directive, dispatched: res.dispatch };
+    toast(`派工 ${res.dispatch_id}：${res.dispatch.status}`);
+  } catch (err) {
+    directive = { ...directive, error: String(err.message || err) };
+    toastError(err);
+  } finally {
+    isAdvancing = false;
+    render();
+  }
 }
 
 function bindConversation() {

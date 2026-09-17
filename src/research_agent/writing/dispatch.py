@@ -267,6 +267,17 @@ def _run_step(db: sqlite3.Connection, index: int, item: dict[str, Any],
         return {"index": index, "task": task, "node": node,
                 "status": "cancelled", "skip_reason": "用户取消"}
 
+    # 计划方（`dispatch_planner`）在解析阶段就能看出某些步骤跑不了，
+    # 并写下原因。这里如实回报，不假装执行过。
+    preset_skip = str(item.get("skip_reason") or "")
+    if preset_skip:
+        step = {"index": index, "task": task, "node": node,
+                "status": "skipped", "skip_reason": preset_skip,
+                "seconds": 0.0}
+        log_event("dispatch.step.skipped", node=node, dispatch=dispatch_id,
+                  db=db, data=step)
+        return step
+
     found = reg.get_task(task)
     if not found:
         return {"index": index, "task": task, "node": node,

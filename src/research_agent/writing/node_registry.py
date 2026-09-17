@@ -602,7 +602,9 @@ NODES: tuple[NodeSpec, ...] = (
             ),
             TaskSpec(
                 task="export", label="导出", entry=_export_entry,
-                accepts=("paper_keys", "style"), produces=("content", "filename"),
+                # 实际实现（`export_project_markdown`）要的是**项目**，不是文献列表。
+                # 契约写错会让每次派工都在参数校验处空转——"登记了但永远跳过"。
+                accepts=("project_id",), produces=("content", "filename"),
                 cost="compute", typical_seconds=(1, 3),
                 needs_model=False, model_missing_behavior="unavailable",
                 timeout_seconds=120, chainable=False,

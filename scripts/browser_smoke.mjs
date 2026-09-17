@@ -250,7 +250,48 @@ async function main() {
           traceText.slice(0, 80).replace(/\n/g, " "));
     await shot("10-trace-drawer");
 
-    // ---------------- ⑥ 研究流程页（登记表驱动 + 派工板） ----------------
+    // ---------------- ⑥ 对节点下指令（自然语言 → 派工方案 → 下单） ----------------
+    // 这是方案 v8 里唯一的"直下指令"入口。离线模式下解析走确定性关键词识别，
+    // 因此这条回归不依赖模型与网络，却能覆盖"解析→选方案→下单→逐步回报"整链。
+    // 注意两点：
+    //   ① hash 里的 `?offline=1` 会让首跳落到总览页（SPA 路由不认带查询串的 hash），
+    //      所以必须点导航；
+    //   ② 离开写作台会 `unmount()` 并清空 `current`，切回来落在**项目选择**视图，
+    //      要重新选项目才能看到访谈面板。
+    await page.click('.nav-item[data-page="experiment"]');
+    await page.waitForTimeout(800);
+    await page.click('.nav-item[data-page="writing"]');
+    await page.waitForTimeout(1500);
+    if (!(await page.locator("#wrBody").count())) {
+      await page.click('.nav-item[data-page="writing"]');
+      await page.waitForTimeout(1500);
+    }
+    await page.waitForSelector("[data-project], [data-choice]", { timeout: 30000 });
+    if (!(await page.locator("#wrDirectText").count())) {
+      await page.locator("[data-project]").first().click();
+      await page.waitForSelector("#wrDirectText", { timeout: 30000 });
+    }
+    check(true, "回到写作台仍能继续访谈并看到指令面板");
+    await page.fill("#wrDirectText", "重建本体视图");
+    await page.click("#wrDirectParse");
+    const planCount = await page.waitForFunction(() => {
+      const buttons = document.querySelectorAll("[data-dispatch-plan]");
+      return buttons.length ? buttons.length : null;
+    }, { timeout: 60000 }).then((h) => h.jsonValue()).catch(() => 0);
+    check(planCount >= 2, "自然语言指令解析出可执行方案", `${planCount} 个按钮`);
+
+    // 执行第一个方案（离线、无网络：重建本体是纯计算任务）
+    await page.locator("[data-dispatch-plan]:not([data-dispatch-plan='ai'])").first().click();
+    const dispatched = await page.waitForFunction(() => {
+      const text = document.querySelector("#wrBody")?.innerText || "";
+      const match = text.match(/派工单\s+(d-[0-9a-f]+)：(\S+)/);
+      return match ? { id: match[1], status: match[2] } : null;
+    }, { timeout: 60000 }).then((h) => h.jsonValue()).catch(() => null);
+    check(Boolean(dispatched), "下单后有派工单回报",
+          dispatched ? `${dispatched.id} ${dispatched.status}` : "未出现");
+    await shot("11b-directive-dispatched");
+
+    // ---------------- ⑦ 研究流程页（登记表驱动 + 派工板） ----------------
     // 这一页以前对几乎每个节点都显示"已完成"（有事件就算完成），
     // 而且写作台的访谈节点根本不在清单里。这里守住三条：
     //   1. 节点清单来自登记表，访谈节点必须在；
@@ -292,7 +333,7 @@ async function main() {
     check(drawerText.length > 20, "点节点卡片能打开详情", drawerText.slice(0, 60).replace(/\n/g, " "));
     await shot("12-experiment-drawer");
 
-    // ---------------- ⑦ 浏览器侧错误 ----------------
+    // ---------------- ⑧ 浏览器侧错误 ----------------
     check(pageErrors.length === 0, "无未捕获的页面异常", pageErrors.slice(0, 3).join(" | "));
     check(failedResponses.length === 0, "无 4xx/5xx 资源请求",
           failedResponses.slice(0, 5).join(" | "));
