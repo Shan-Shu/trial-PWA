@@ -155,6 +155,7 @@ CREATE TABLE IF NOT EXISTS writing_projects (
     genre        TEXT DEFAULT 'research_article',
     language     TEXT DEFAULT 'zh',
     outline_json TEXT DEFAULT '[]',
+    plan_json    TEXT DEFAULT '{}',   -- 工作规划（唯一规划节点的产物）
     status       TEXT DEFAULT 'draft',
     created_at   TEXT NOT NULL,
     updated_at   TEXT
@@ -188,6 +189,9 @@ CREATE TABLE IF NOT EXISTS section_runs (
     instruction       TEXT,
     stage             TEXT,          -- planning / sufficiency / collecting / consuming / composing / done / failed
     decision          TEXT,          -- sufficient / insufficient / exhausted
+    template_key      TEXT,          -- 该部分用的模板（部分 = 固定模板）
+    field_source_json TEXT,          -- 每个字段的来源（user / plan / template）
+    unmet_json        TEXT,          -- 未满足的必考维度（允许带缺口写作时用于标注）
     plan_json         TEXT,
     sufficiency_json  TEXT,
     collection_json   TEXT,
@@ -236,6 +240,24 @@ def connect(db_path: Path | str | None = None) -> sqlite3.Connection:
         ):
             if col not in section_cols:
                 conn.execute(f"ALTER TABLE writing_sections ADD COLUMN {col} {decl}")
+    # writing_projects：工作规划（唯一规划节点的产物）
+    if _table_exists(conn, "writing_projects"):
+        project_cols = {r["name"] for r in conn.execute(
+            "PRAGMA table_info(writing_projects)")}
+        if "plan_json" not in project_cols:
+            conn.execute(
+                "ALTER TABLE writing_projects ADD COLUMN plan_json TEXT DEFAULT '{}'")
+    # section_runs：模板化后要记录用了哪个模板、字段来源、未满足的必考维度
+    if _table_exists(conn, "section_runs"):
+        run_cols = {r["name"] for r in conn.execute(
+            "PRAGMA table_info(section_runs)")}
+        for col, decl in (
+            ("template_key", "TEXT"),
+            ("field_source_json", "TEXT"),
+            ("unmet_json", "TEXT"),
+        ):
+            if col not in run_cols:
+                conn.execute(f"ALTER TABLE section_runs ADD COLUMN {col} {decl}")
     conn.commit()
     return conn
 

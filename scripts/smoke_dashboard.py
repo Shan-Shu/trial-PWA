@@ -115,11 +115,15 @@ def seed(db_path: Path) -> None:
         "quality": 0.86, "decision": "direct", "needs_review": False,
         "meta_missing": [], "rationale": "ok",
     })
-    # 抽取记录 + 超边：充分性判定的"知识覆盖""可用证据"两个维度需要它们
+    # 抽取记录 + 超边：充分性判定的"知识覆盖""可用证据""量化条件"三个维度需要它们。
+    # 注意**必须先 init_ontology**：超边三张表由本体层建，核心 schema 里没有，
+    # 漏了这一步会让超边数恒为 0（判定里被 sqlite3.Error 静默吞掉，
+    # 表现为"量化条件闸门永不触发"这种很难查的假阴性）。
     for key in ("smoke:1", "smoke:3"):
         log_event(conn, "knowledge", "extracted", key,
                   {"entities": 5, "relations": 4})
-    from research_agent.ontology.store import init_ontology, upsert_edge, upsert_node
+    from research_agent.ontology.store import (
+        init_ontology, upsert_edge, upsert_hyperedge, upsert_node)
     init_ontology(conn)
     ynamide_id, _ = upsert_node(conn, node_type="Substrate",
                                 name="N-sulfonyl ynamide", confidence=0.9)
@@ -132,6 +136,12 @@ def seed(db_path: Path) -> None:
         upsert_edge(conn, relation_type=rel, src_id=src, tgt_id=tgt,
                     confidence=0.9,
                     provenance=[{"paper": "smoke:1", "evidence": "冒烟种子"}])
+    # 这里**刻意只建两条边、不建超边**：
+    # 一条无条件超边会让既有的"量化条件"闸门判不足，从而挡住旧体裁本该走通的
+    # "充足 → 成段"分支（那不是 bug，是闸门在正确工作）。需要真实覆盖
+    # "带缺口写作"的用例改为在 experiment_protocol 体裁上做——见
+    # "预判：缺量化条件被识别为未达标维度" 与 "带缺口写作" 两组检查，
+    # 那里库内确实没有量化条件可用。
     log_event(conn, "retrieval", "relevance-gate-low-signal", "smoke:2",
               {"low_signal": "topic_token_overlap_zero"})
     conn.commit()
@@ -404,6 +414,97 @@ def main(argv: list[str] | None = None) -> int:
             f"{base}/api/writing/projects/{project_id}/section-states")
         check(states.get("ok") and node_key in (states.get("states") or {}),
               "节点指令：节点状态徽标接口可用")
+
+        # ---------------- 工作规划（唯一的规划节点）+ 部分模板 ----------------
+        status, tpls = get(f"{base}/api/writing/templates?genre=experiment_protocol")
+        check(status == 200 and tpls.get("ok") and tpls.get("templates"),
+              "模板：实验设计体裁有部分模板")
+        check(any(t["key"] == "parameters" for t in tpls.get("sections") or []),
+              "模板：实验设计含参数与条件节")
+        params_tpl = next((t for t in tpls.get("sections") or []
+                           if t.get("key") == "parameters"), {})
+        check(bool(params_tpl.get("fields")),
+              "模板：参数节声明了可填字段且带预设值")
+
+        status, tpls_review = get(f"{base}/api/writing/templates?genre=frontier_review")
+        check(status == 200 and len(tpls_review.get("templates") or []) >= 5,
+              "模板：文献综述有 5 个以上部分模板")
+
+        # 只给主题、不给任何指令：系统应能自拟工作规划
+        status, plan_created = post(f"{base}/api/writing/projects",
+                                    {"title": "工作规划冒烟",
+                                     "topic": "gold catalysis ynamide annulation",
+                                     "genre": "experiment_protocol"})
+        plan_pid = plan_created.get("project_id")
+        status, wplan = post(f"{base}/api/writing/projects/{plan_pid}/plan", {})
+        check(wplan.get("ok") is True, "工作规划：只给主题即可生成", str(wplan)[:200])
+        check(wplan.get("mode") == "auto",
+              "工作规划：无指令时进入系统自拟模式", str(wplan.get("mode")))
+        plan_sections = wplan.get("sections") or []
+        check(len(plan_sections) >= 7, "工作规划：覆盖全部部分",
+              f"count={len(plan_sections)}")
+        combos = {tuple(sorted(s.get("required_dimensions") or []))
+                  for s in plan_sections}
+        check(len(combos) >= 3,
+              "工作规划：各部分的必考维度彼此不同（不是全篇一套）",
+              f"combos={combos}")
+        by_key = {s.get("section_key"): s for s in plan_sections}
+        check("conditions" in (by_key.get("parameters", {})
+                               .get("required_dimensions") or []),
+              "工作规划：参数节必考量量化条件")
+        check("conditions" not in (by_key.get("objective", {})
+                                   .get("required_dimensions") or []),
+              "工作规划：目标节不考量量化条件（按部分特征区分）")
+
+        # 用户填了字段 → user 模式并优先
+        status, wplan_user = post(
+            f"{base}/api/writing/projects/{plan_pid}/plan",
+            {"instruction": "只关注配体效应"})
+        check(wplan_user.get("mode") == "user",
+              "工作规划：给了指令即进入用户模式", str(wplan_user.get("mode")))
+
+        # 预判：参数节应因缺量化条件判不足，且指出缺的是 conditions
+        status, pre_plan = post(
+            f"{base}/api/writing/projects/{plan_pid}/sections/parameters/plan",
+            {"fields": {"params": "无水无氧，-20 °C"}})
+        check(pre_plan.get("ok") is True, "预判：参数节可预判", str(pre_plan)[:200])
+        check(pre_plan.get("template_key") == "proto_parameters",
+              "预判：取到参数节的模板", str(pre_plan.get("template_key")))
+        pv = pre_plan.get("sufficiency") or {}
+        check("conditions" in (pv.get("unmet_dimensions") or []),
+              "预判：缺量化条件被识别为未达标维度",
+              f"unmet={pv.get('unmet_dimensions')} gates={pv.get('gates')}")
+        check(pre_plan.get("field_sources", {}).get("user") == ["params"],
+              "预判：用户填写的字段被标为 user 来源",
+              str(pre_plan.get("field_sources")))
+
+        # 带缺口写作：正文有内容且顶部有标注
+        status, gap_job = post(
+            f"{base}/api/writing/projects/{plan_pid}/sections/parameters/compose",
+            {"fields": {"params": "无水无氧，-20 °C"}})
+        check(gap_job.get("ok") is True, "带缺口写作：作业已受理")
+        gap_snap = {}
+        for _ in range(60):
+            time.sleep(0.4)
+            status, gap_snap = get(
+                f"{base}/api/writing/section-jobs/{gap_job.get('job_id')}")
+            if gap_snap.get("status") in ("done", "error", "cancelled"):
+                break
+        gap_result = gap_snap.get("result") or {}
+        check(gap_snap.get("outcome") == "written_with_gaps",
+              "带缺口写作：证据不足但模板允许 → 产出正文并标注",
+              f"outcome={gap_snap.get('outcome')} err={gap_snap.get('error')}")
+        status, gap_content = get(
+            f"{base}/api/writing/projects/{plan_pid}/sections/parameters/content")
+        check("本节证据缺口" in (gap_content.get("content") or ""),
+              "带缺口写作：正文顶部有显式缺口标注")
+        check(gap_content.get("grounded_on", {}).get("template_key")
+              == "proto_parameters",
+              "带缺口写作：轨迹记录了所用模板")
+
+        status, del_plan = post(f"{base}/api/writing/projects/{plan_pid}", {},
+                                method="DELETE")
+        check(del_plan.get("ok") is True, "清理：工作规划冒烟项目")
 
         status, cancelled = post(
             f"{base}/api/writing/section-jobs/does-not-exist/cancel", {})

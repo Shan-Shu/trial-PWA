@@ -3,7 +3,7 @@
 > 合并基线：`Shan-Shu/trial` / research-agent **v0.4.4**（169 测试全绿）
 > 并入来源：`JoeTrump22/-paper_writing_assistant`（PWA）
 > 方案依据：`merge_plan_v2.md`
-> 结果：**296 单元测试 + 47 项前端模块加载 + 99 项端到端 HTTP 全部通过**
+> 结果：**328 单元测试 + 47 项前端模块加载 + 119 项端到端 HTTP + 56 处接口配对全部通过**
 
 ---
 
@@ -57,38 +57,74 @@
 
 ### 大纲节点 = 工作规划节点（本节工作流）
 
-写作台的每个大纲节点都能接收指令，并走完整编排链：
+写作台的结构是 **一个规划节点 + N 套固定模板**：
 
 ```
-节点指令
-   ↓
-planner_section（复用研究 Planner，但只规划"这一节"的检索）
-   ↓
-sufficiency（★ 检索**之前**判定现有库够不够写，逐轮落 section_runs）
-   ├── 不足且还有预算 → collection 补检扩库 ↺ 回到 sufficiency 复审
-   ├── 预算用尽仍不足 → END(needs_data)：**不生成正文**，给出缺口与建议补检词
-   └── 充足 → knowledge_consumer → section_compose → END(written)
+用户输入：主题（必需） + 各部分的模板表单（全部可选）
+        ↓
+工作规划（唯一的规划节点）  mode=auto 系统自拟 ／ mode=user 遵照用户
+        ↓ 工作规划：每部分的职责 / 要点 / 证据类型 / 必考维度
+   模板(范围)  模板(版图)  模板(参数)  模板(设计) …      ← 不是节点，是模板
+        ↓
+   充分性判定（按该模板的 required_dimensions）
+        ↓
+   充足 → 成段 ／ 不足 → 补检 ↺ ／ 预算用尽 → 带缺口成文（显式标注）
 ```
+
+**部分不是节点，而是数据里的模板**（`packs/skills/writing/content/data.json`
+的 `genres.<genre>.templates`）。模板承载"这一部分要什么"：
+
+| 模板字段 | 作用 |
+|---|---|
+| `role` / `focus` | 该部分职责与写作要点（渲染进提示词） |
+| `required_dimensions` | **决定这一部分考哪几个维度**——未被列出的维度权重为 0、不设闸门 |
+| `evidence_types` | 应依据的证据类型（用于缺口标注与补检建议） |
+| `min_support` | 证据保全下限 |
+| `allow_gaps` | 证据不足时是否允许"带缺口成文（必须标注）" |
+| `fields` | 该部分暴露的可填字段与预设值 |
+
+**双模并行（纯并行，字段级）**：用户填了 → `user`；规划节点给了 → `plan`；
+否则模板预设 → `template`。**用户填过的字段，规划不再覆盖**。
+
+**全自动模式**：只给主题、不给任何指令与字段时，规划节点依主题自拟任务单，
+本模块把 `analysis_plan` / `analysis_targets` 按"部分职责"映射下发——
+逐部分调模型意味着 7 个部分 7 次调用，成本与可解释性都不可接受，因此
+LLM 只出一份任务单，映射是确定性的。
+
+**带缺口写作**（用户明确要求）：模板 `allow_gaps=True` 时，判定不足仍照常成文，
+但**正文顶部插入显式标注**（列出缺哪类证据、哪些内容是推断），轨迹里
+`unmet_dimensions` 与 `status="written_with_gaps"` 都保留。最低门槛是
+"至少有一点可引用的东西"——完全空白时仍返回 `needs_data`。
+未挂模板的部分（如尚未配模板的 `research_article`）**不允许**带缺口写作，
+退回旧约定。
+
+**两套模板已落地**：
+
+| 体裁 | 部分数 | 判定侧重 |
+|---|---|---|
+| `frontier_review`（文献综述） | 5 个模板 + 摘要/参考文献 | 文献量、可比研究、约束可复现；**不要求**量化条件 |
+| `experiment_protocol`（实验设计） | 7 个模板 + 参考文献 | 量化条件、分组对照、可复现流程；**不要求**大量文献 |
+
+实测（同一个库、同一时刻）：`objective` / `background` 判 `sufficient`，
+`parameters` / `readouts` / `design` 因缺量化条件、`groups` / `risks` 因缺可比证据
+判 `insufficient`——各部分因模板不同而结论不同。
 
 **为什么把判定放在检索之前**：既有 `study/graph.py` 是"先检索一轮、消费时才发现缺口"，
 在写作台上意味着用户点一次就白烧一轮配额。先判后检，不足才花钱。
 
-**为什么不足时不硬写**：证据不足时生成正文，产出的是一段"看起来完整、实际无法回溯"的
-文字。此时返回 `needs_data` + 缺失要求清单，由人决定补检、放宽阈值或换题。
-（配置项 `section_allow_write_when_insufficient` 可改为硬写，默认关闭。）
+**五维加权 + 硬闸门**（避免加权平均被饱和维度稀释）：
 
-**判定是五维加权 + 硬闸门**，而不是单纯加权平均：
+| 维度 | 默认权重 | 说明 |
+|---|---|---|
+| 命中文献 | 0.30 | 绝对比例，避免"刚达标=满分" |
+| 知识覆盖 | 0.20 | 只算命中文献里真的抽取过的 |
+| 量化条件 | 0.20 | 带条件/测量的超边占比 |
+| 可比证据 | 0.15 | 同类型超边/关系 ≥2 条才算"可两两比较" |
+| 指令要求 | 0.15 | 只取指令与规划要点，标题不算要求 |
+| 可用证据 | 0.10 | 供引文绑定 |
 
-| 维度 | 权重 | 闸门 | 说明 |
-|---|---|---|---|
-| 命中文献 | 0.30 | 命中数 ≥ `min_papers` | 绝对比例，避免"刚达标=满分" |
-| 知识覆盖 | 0.25 | 已抽取向 ≥ 60% | 只算命中文献里真的抽取过的 |
-| 量化条件 | 0.20 | 带条件/测量的超边 ≥ 30% | 无条件的证据写不出可复核的方法 |
-| 指令要求 | 0.15 | 覆盖 ≥ 50% | 只取**指令**里的要求词，标题不算要求 |
-| 可用证据 | 0.10 | 超边/边 ≥ `min_evidence` | 全库范围，供引文绑定 |
-
-加权平均会被饱和维度稀释（实测：命中 1 篇文献也能被其余满分抬过 0.62 阈值），
-因此**任一闸门未达标即把置信度封顶到阈值以下**，只允许结论更保守。
+挂了模板的部分只考 `required_dimensions` 里的维度；未挂模板的部分沿用全部闸门，
+避免"换个体裁就悄悄放宽判定"。任一必考维度未达标即把置信度封顶到阈值以下。
 
 ---
 
@@ -96,15 +132,27 @@ sufficiency（★ 检索**之前**判定现有库够不够写，逐轮落 sectio
 
 | 方法 | 路径 | 用途 |
 |---|---|---|
-| `POST` | `/api/writing/projects/{id}/sections/{key}/plan` | **征求意见**：只规划 + 判定，不检索、不写正文 |
-| `POST` | `/api/writing/projects/{id}/sections/{key}/compose` | **撰写此段**：启动异步作业，返回 `job_id` |
-| `GET` | `/api/writing/section-jobs/{job_id}` | 作业进度、终态与结果（含 `needs_data` 区分"不足"与"报错"） |
+| `POST` | `/api/writing/projects/{id}/plan` | **工作规划**：不传 `instruction` → 系统自拟；传了 → 按你的指令。落 `writing_projects.plan_json` |
+| `GET` | `/api/writing/templates?genre=…` | 列出该体裁的部分模板（结构 + 可填字段 + 预设值） |
+| `POST` | `/api/writing/projects/{id}/sections/{key}/plan` | **预判本节够不够写**：只规划 + 判定，不检索、不写正文 |
+| `POST` | `/api/writing/projects/{id}/sections/{key}/compose` | **撰写本部分**：启动异步作业；`instruction` 与 `fields` 都可留空 |
+| `GET` | `/api/writing/section-jobs/{job_id}` | 作业进度与结果（`outcome` 区分 `written` / `written_with_gaps` / `needs_data` / `failed`） |
 | `POST` | `/api/writing/section-jobs/{job_id}/cancel` | 取消作业 |
-| `GET` | `/api/writing/projects/{id}/sections/{key}/trace` | 决策轨迹（逐轮判定 + 维度得分 + 引文溯源） |
-| `GET` | `/api/writing/projects/{id}/sections/{key}/content` | 仅取该节点正文（撰写完成后局部刷新） |
-| `GET` | `/api/writing/projects/{id}/section-states` | 该项目所有节点状态（列表徽标，避免 N+1） |
+| `GET` | `/api/writing/projects/{id}/sections/{key}/trace` | 决策轨迹（逐轮判定 + 模板 + 字段来源 + 引文溯源） |
+| `GET` | `/api/writing/projects/{id}/sections/{key}/content` | 仅取该部分正文（撰写完成后局部刷新） |
+| `GET` | `/api/writing/projects/{id}/section-states` | 该项目所有部分状态（列表徽标） |
 
-节点状态：`draft` / `planning` / `insufficient` / `needs_data` / `written` / `stale` / `failed`。
+部分状态：`draft` / `planning` / `insufficient` / `needs_data` / `written` /
+**`written_with_gaps`** / `stale` / `failed`。
+
+请求体示例（两个字段都可省略）：
+
+```json
+{
+  "instruction": "可选：额外指令",
+  "fields": { "params": "无水无氧，-20 °C", "replicates": 5 }
+}
+```
 
 **引文必须可回溯**：正文里的 `[n]` 由 `bind_citations()` 绑定到真实
 `paper_key` 与 `hyperedge_id`，写入 `writing_sections.grounded_on`；模型引用了素材清单外的
@@ -229,9 +277,9 @@ uv run research-agent-dashboard --port 8000 --db data\dashboard_demo.db
 uv run python scripts/migrate_from_pwa.py --src "D:\pwa\data\paper_assistant.db" --dry-run
 
 # 4. 三层验证
-uv run python -m unittest discover -s tests          # 296 单元测试
+uv run python -m unittest discover -s tests          # 328 单元测试
 node scripts/frontend_smoke.mjs src/research_agent/dashboard/static   # 47 项前端加载
-uv run python scripts/smoke_dashboard.py             # 99 项端到端 HTTP
+uv run python scripts/smoke_dashboard.py             # 119 项端到端 HTTP
 
 # 4b. 前端接口与后端路由是否配得上（错配只会在点击时 404）
 uv run python scripts/check_frontend_routes.py
@@ -257,12 +305,13 @@ uv run python scripts/verify_section_flow.py --base http://127.0.0.1:8000
 | 上游既有 | 169 | 未改动，全部仍通过 |
 | `test_library.py` | 52 | 侧车 CRUD/级联/筛选分面/低信号/批量作业/引用四样式/导出/系统状态 |
 | `test_writing.py` | 21 | 体裁来自 pack、显式降级标记、引用入库、导出、路由装配 |
-| `test_section_flow.py` | **28** | **节点指令工作流**：词元/停用词、五维判定与硬度闸门、预算用尽、补检→复审、逐轮留痕、引文绑定与越界报告、取消、提示词纪律 |
+| `test_section_flow.py` | 28 | 节点指令工作流：词元/停用词、五维判定与硬度闸门、预算用尽、补检→复审、逐轮留痕、引文绑定与越界报告、取消、提示词纪律 |
+| `test_section_templates.py` | **30** | **两套模板与工作规划**：模板完整性、维度按部分区分、系统自拟与用户模式、字段来源（user/plan/template）与纯并行优先级、同一库不同结论、带缺口写作与标注幂等、轨迹记录模板 |
 | `test_frontend_assets.py` | 16 | 资源存在、**相对导入可解析**、注册表一致性、转义策略+自检、PWA 令牌一致、**前端接口与后端路由逐一配对** |
 | `test_migration.py` | 10 | dry-run 不写库、apply 齐全、幂等、状态映射、质量分换算、溯源 |
-| **单元测试合计** | **296** | `OK` |
+| **单元测试合计** | **328** | `OK` |
 | `frontend_smoke.mjs` | 47 | 真实 import 全部模块、调用 `mount()`、校验 9 页契约与注册表 |
-| `smoke_dashboard.py` | 99 | 真实 HTTP：新端点 + **节点工作流全链路** + 静态资源 + **旧端点无回归** |
+| `smoke_dashboard.py` | 119 | 真实 HTTP：新端点 + **工作规划/模板/带缺口写作** + 节点工作流全链路 + 静态资源 + **旧端点无回归** |
 | `verify_section_flow.py` | 人工核对 | 在**正在运行的库**上跑一遍并打印判定/轨迹/正文，用于肉眼确认界面所见 |
 
 ---
@@ -275,6 +324,12 @@ uv run python scripts/verify_section_flow.py --base http://127.0.0.1:8000
    "无模型显式降级"路径（也是默认路径）。**成段链路的模型分支只在单测里用假模型验证**
    ——`test_prompt_carries_numbered_materials_and_instruction` 断言提示词确实带上了编号素材、
    节点指令与引用纪律，但没有真实模型输出可对标。
+2b. **工作规划目前是确定性的**：无模型时，各部分的写作要点来自"模板 `focus` +
+   按部分职责映射的 `analysis_plan` 维度"；有模型时 LLM 只出**一份**整篇任务单
+   （不是逐部分调用）。因此"系统自拟"的质量主要取决于主题词与模板设计，
+   配 Key 后建议对照一次真实规划结果。
+2c. **`research_article` 体裁尚未配部分模板**：它落回旧行为（无模板 → 全部既有
+   闸门 + 不允许带缺口写作）。要让它也享受"按部分判定"，需按同样格式补 `templates`。
 3. **充分性判定目前是确定性阈值**：五维加权 + 硬闸门全部由 SQL 统计得出，模型只作为
    "可选的保守复核"（传入 `llm_analysis` 时取更保守的结论）。因此判定质量取决于库的元数据
    完整度（抽取记录、超边条件/测量），元数据缺失会表现为"缺数据"而非"模型说不行"。

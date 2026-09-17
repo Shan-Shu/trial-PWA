@@ -450,13 +450,19 @@ class TestWorkflow(SectionBase):
         self.assertEqual(section["last_run_id"], result["run_id"])
         self.assertEqual(trace["rounds"][-1]["run_id"], result["run_id"])
 
-    def test_empty_instruction_rejected(self):
+    def test_empty_instruction_runs_in_auto_mode(self):
+        """空指令**不再报错**：走"系统自拟"模式（工作规划 + 模板默认）。
+
+        这是需求变更的核心：用户只该给主题，不该被迫逐部分声明要写什么。
+        """
         project_id = self._project()
         key = self._project_section(project_id)
-        with self.assertRaises(ValueError):
-            sections.run_section_workflow(
-                project_id=project_id, section_key=key, instruction="   ",
-                db_path=str(self.db), settings=self.settings)
+        result = sections.run_section_workflow(
+            project_id=project_id, section_key=key, instruction="",
+            db_path=str(self.db), settings=self.settings,
+            compose_model=_FakeModel("金催化 [1]。"))
+        self.assertNotEqual(result["status"], "failed")
+        self.assertIn(result["work_plan_mode"], ("auto", "user"))
 
     def test_unknown_section_rejected(self):
         project_id = self._project()

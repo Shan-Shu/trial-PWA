@@ -67,6 +67,14 @@ class SectionState(TypedDict, total=False):
     words: int
     topic: str
     planning_request: str
+    genre: str
+    focus: list[Any]
+    fields_block: str
+    fields: dict[str, Any]
+    role: str
+    template_key: str
+    unmet_dimensions: list[Any]
+    evidence_types: list[Any]
     plan: dict[str, Any]
     sufficiency: dict[str, Any]
     sufficiency_rounds: int
@@ -217,6 +225,7 @@ def build_section_graph(
             if db is None:
                 from research_agent.db import connect
                 db = connect(s.db_path)
+            # 模板驱动：判定维度与闸门由"这一部分"的模板决定，不由用户指令决定
             verdict = evaluate_sufficiency(
                 db,
                 plan=state.get("plan") or {},
@@ -224,6 +233,9 @@ def build_section_graph(
                 heading=str(state.get("heading") or ""),
                 settings=s,
                 rounds_done=done_rounds,
+                section_key=str(state.get("section_key") or ""),
+                genre=str(state.get("genre") or ""),
+                focus_terms=list(state.get("focus") or []),
             )
         finally:
             if own_conn and db is not None:
@@ -235,6 +247,11 @@ def build_section_graph(
             "sufficiency": verdict,
             "status": decision,
             "sufficiency_rounds": next_round,
+            # **必须显式写回 state**：compose_node 靠这两个字段决定要不要在正文
+            # 顶部插缺口标注，而判定节点返回的 verdict 不会自动摊平进 state
+            # （实测漏了这步 → 走了带缺口写作却没有任何标注）。
+            "unmet_dimensions": list(verdict.get("unmet_dimensions") or []),
+            "evidence_types": list(verdict.get("evidence_types") or []),
         }
         if decision != "sufficient":
             requests = verdict.get("retrieval_requests") or []
@@ -272,6 +289,11 @@ def build_section_graph(
             model_reason=compose_model_reason,
             section_note=str(state.get("section_note") or ""),
             words=int(state.get("words") or 0),
+            # 模板渲染出的结构化字段块（每项标了来源：用户/规划/模板默认）
+            fields_block=str(state.get("fields_block") or ""),
+            role=str(state.get("role") or ""),
+            unmet_dimensions=list(state.get("unmet_dimensions") or []),
+            evidence_types=list(state.get("evidence_types") or []),
         )
         return {"section": section, "status": "written"}
 
@@ -307,10 +329,10 @@ def _route_after_sufficiency(state: dict[str, Any]) -> str:
 
     - ``sufficient`` → 消费知识并成段；
     - ``insufficient`` 且**还有补检预算** → 回到检索扩库；
-    - ``exhausted``（预算用尽仍不足）→ 直接结束，**不硬写**。
-
-    "不硬写"是刻意的：证据不足时生成正文只会产出看起来完整、实际无法回溯的段落，
-    此时返回 ``needs_data`` 让用户决定是否放宽阈值或换题。
+    - 预算用尽仍不足 → 看该部分的模板允不允许**带缺口写作**：
+      ``allow_gaps=True`` 时照常成段，但正文顶部会插入显式的缺口标注
+      （用户要求：证据不足可以写，但必须标出来，并允许标注范围内的发挥）；
+      ``allow_gaps=False`` 时才返回 ``needs_data`` 且不产出正文。
     """
     verdict = state.get("sufficiency") or {}
     decision = str(verdict.get("decision") or "")
@@ -322,4 +344,19 @@ def _route_after_sufficiency(state: dict[str, Any]) -> str:
         max_rounds = int(verdict.get("max_rounds") or 0)
         if done < max_rounds:
             return "collection"
+    # 预算用尽：允许缺口就写（带标注），否则停在这里
+    if bool(verdict.get("allow_gaps", False)) and _has_writable_support(verdict):
+        return "knowledge_consumer"
     return "end"
+
+
+def _has_writable_support(verdict: dict[str, Any]) -> bool:
+    """带缺口写作的最低门槛：至少要有一点点可引用的东西。
+
+    完全空白（零命中文献、零证据、零材料）时不该产出正文——那不是"带缺口的写作"，
+    而是"凭空的写作"，标注也救不回来。
+    """
+    counts = verdict.get("counts") or {}
+    return bool(verdict.get("paper_keys")) or \
+        int(counts.get("matched_papers") or 0) > 0 or \
+        int(counts.get("evidence_ids") or 0) > 0

@@ -29,6 +29,10 @@ let projects = [];
 let current = null;
 let sections = [];
 let states = {};
+/** section_key -> 该部分的模板（字段、必考维度、职责） */
+let templates = {};
+/** 当前项目的工作规划（唯一规划节点的产物） */
+let workPlan = null;
 /** section_key -> {jobId, timer} */
 const running = new Map();
 
@@ -38,13 +42,14 @@ const GEN_META = {
   skeleton_fallback: ["骨架降级（模型不可用）", "amber"],
 };
 
-/** 节点状态徽标：draft/planning/needs_data/written/stale */
+/** 部分状态徽标：draft/planning/needs_data/written/written_with_gaps/stale */
 const STATE_META = {
   draft: ["未撰写", "gray", ""],
   planning: ["判定中", "blue", "pulse"],
   insufficient: ["证据不足", "amber", ""],
   needs_data: ["缺数据", "amber", ""],
   written: ["已成段", "green", ""],
+  written_with_gaps: ["带缺口成文", "violet", ""],
   stale: ["证据已变", "violet", ""],
   failed: ["失败", "red", ""],
 };
@@ -61,6 +66,17 @@ const DIM_LABELS = {
   conditions: "量化条件",
   requirements: "指令要求",
   evidence: "可用证据",
+  comparison: "可比证据",
+};
+
+/** 证据类型的中文名（与后端 section_template.EVIDENCE_TYPE_LABELS 对齐） */
+const EVIDENCE_LABELS = {
+  citation: "可引用文献",
+  mechanism: "机制证据",
+  quantitative: "量化条件/数值",
+  comparative: "可比研究或对照",
+  protocol: "可复现流程",
+  risk: "风险与负结果",
 };
 
 export const writingPage = {
@@ -167,10 +183,42 @@ async function openProject(projectId, { silent = false } = {}) {
     sections = data.sections || [];
     store.writingProjectId = current.project_id;
     await loadStates();
+    loadWorkPlan(data.work_plan);
     main.innerHTML = renderProject();
     bindProject();
   } catch (err) {
     main.innerHTML = errorBox(err);
+  }
+}
+
+/** 取工作规划并索引成 templates（每部分的模板信息） */
+function loadWorkPlan(plan) {
+  workPlan = plan && plan.ok ? plan : null;
+  templates = {};
+  ((workPlan && workPlan.sections) || []).forEach((s) => {
+    templates[String(s.section_key)] = {
+      template: s.template,
+      role: s.role,
+      focus: s.focus,
+      focus_source: s.focus_source,
+      required_dimensions: s.required_dimensions || [],
+      evidence_types: s.evidence_types || [],
+      fields: s.fields || [],
+      generates_body: s.generates_body,
+    };
+  });
+  // 还没有工作规划时，退回逐部分模板信息（项目详情已带上）
+  if (!workPlan) {
+    (sections || []).forEach((s) => {
+      templates[String(s.section_key)] = {
+        template: s.template,
+        role: s.role,
+        required_dimensions: s.required_dimensions || [],
+        evidence_types: s.evidence_types || [],
+        fields: s.fields || [],
+        generates_body: s.generates_body,
+      };
+    });
   }
 }
 
@@ -185,7 +233,11 @@ function renderProject() {
   const genre = genres.find((g) => g.key === current.genre);
   const filled = sections.filter((s) => (s.content || "").trim()).length;
   const needsData = Object.values(states).filter((s) => s.status === "needs_data").length;
+  const gapCount = Object.values(states).filter(
+    (s) => s.status === "written_with_gaps").length;
   const sectionCardsHtml = sections.map((s) => sectionCard(s)).join("");
+  // renderWorkPlan 返回的是**已由 h() 逐值转义**的 HTML 片段，命名带 Html 后缀
+  const workPlanHtml = renderWorkPlan(workPlan);
   return `
   ${card(`
     <div class="row" style="justify-content:space-between;align-items:flex-start">
@@ -197,19 +249,63 @@ function renderProject() {
       </div>
       <div class="row tight">
         <button class="btn small" id="wrOutline">生成/刷新大纲</button>
+        <button class="btn small primary" id="wrPlan">生成工作规划</button>
         <button class="btn small ghost" id="wrExport">导出 Markdown</button>
         <button class="btn small ghost danger" id="wrDelete">删除项目</button>
       </div>
     </div>
+    <div id="wrPlanBox" style="margin-top:10px">${workPlanHtml}</div>
     ${needsData ? `<div class="muted" style="font-size:11.5px;margin-top:8px">
-      ⚠ ${h(needsData)} 个节点被判「缺数据」——它们<b>没有生成正文</b>，请按缺口补检或换主题。</div>` : ""}`,
+      ⚠ ${h(needsData)} 个部分被判「缺数据」且未生成正文，请按缺口补检或换主题。</div>` : ""}
+    ${gapCount ? `<div class="muted" style="font-size:11.5px;margin-top:6px">
+      ℹ ${h(gapCount)} 个部分带缺口成文——正文顶部已标注缺少哪类证据，可继续补检后重跑。</div>` : ""}`,
     { flat: true })}
   <div class="stack" style="margin-top:12px">
     ${sections.length ? sectionCardsHtml : empty("还没有大纲节点，点「生成/刷新大纲」")}
   </div>`;
 }
 
-/** 节点卡片：指令输入 + 两个动作 + 状态 + 正文 + 轨迹容器 */
+/** 工作规划表：每个部分写什么、要什么证据、有哪些可填字段 */
+function renderWorkPlan(plan) {
+  if (!plan || !plan.ok) {
+    return `<div class="muted" style="font-size:11.5px">
+      还没有工作规划。点「生成工作规划」——只给主题时由系统自拟，填了指令则按你的指令走。</div>`;
+  }
+  const modeLabel = plan.mode === "user" ? "按你的指令" : "系统自拟";
+  const rowsHtml = (plan.sections || []).map((s) => {
+    const dims = (s.required_dimensions || []).map((d) => DIM_LABELS[d] || d);
+    const ev = (s.evidence_types || []).map((t) => EVIDENCE_LABELS[t] || t);
+    const srcTag = { plan: "规划拟定", template: "模板默认", user: "用户指定" }[s.focus_source] || "";
+    return `<tr>
+      <td><b>${h(s.heading || s.section_key)}</b>${s.generates_body ? "" : ' <span class="chip-tag off">不生成正文</span>'}</td>
+      <td>${dims.length ? h(dims.join("、")) : '<span class="muted">—</span>'}</td>
+      <td>${ev.length ? h(ev.join("、")) : '<span class="muted">—</span>'}</td>
+      <td>${h(s.min_support || 1)}</td>
+      <td>${s.focus && s.focus.length ? h(s.focus.slice(0, 3).join("；")) : '<span class="muted">—</span>'}
+        ${srcTag ? `<span class="chip-tag">${h(srcTag)}</span>` : ""}</td>
+    </tr>`;
+  }).join("");
+  return `<div class="card flat">
+    <div class="row" style="justify-content:space-between">
+      <div class="row tight" style="align-items:center">
+        <span class="badge b-${plan.mode === "user" ? "blue" : "green"}">${h(modeLabel)}</span>
+        <span class="muted" style="font-size:11.5px">${h(plan.section_count)} 个部分 ·
+          ${h(plan.generates_body_count)} 个生成正文 · 规划模式 ${h(plan.planner_mode || "—")}</span>
+      </div>
+      <span class="muted" style="font-size:11px">主题：${h(trunc(plan.topic || "—", 40))}</span>
+    </div>
+    <div class="table-wrap" style="margin-top:8px">
+      <table class="data">
+        <thead><tr><th>部分</th><th>必考维度</th><th>证据类型</th><th>保全</th><th>写作要点</th></tr></thead>
+        <tbody>${rowsHtml}</tbody>
+      </table>
+    </div>
+    ${plan.model_unavailable_reason ? `<div class="muted" style="font-size:11px;margin-top:6px">
+      模型不可用：${h(plan.model_unavailable_reason)}（规划由模板与确定性规则给出）</div>` : ""}
+  </div>`;
+}
+
+/** 部分卡片：模板表单（可选填）+ 两个动作 + 状态 + 正文 + 轨迹容器 */
 function sectionCard(s) {
   const key = String(s.section_key);
   const st = states[key] || {};
@@ -220,12 +316,17 @@ function sectionCard(s) {
   const content = s.content || "";
   const charCount = content.length;
   const citations = (s.citation_ids || []).length;
+  const tpl = templates[key] || st.template || null;
+  const unmet = grounded.unmet_dimensions || [];
+  const dims = (tpl && tpl.required_dimensions) || [];
+  const dimLabels = dims.map((d) => DIM_LABELS[d] || d);
   return `<div class="card" data-section="${h(key)}">
     <div class="row" style="justify-content:space-between;align-items:flex-start">
       <div class="row tight" style="align-items:center">
         <b>${h(s.heading || key)}</b>
         <span class="badge b-${tone} ${extra}" data-role="stateBadge">${h(label)}</span>
         ${invalid.length ? `<span class="badge b-red">越界引文 ${h(invalid.length)} 处</span>` : ""}
+        ${unmet.length ? `<span class="badge b-amber" title="允许带缺口写作，已在正文标注">缺口 ${h(unmet.length)} 项</span>` : ""}
       </div>
       <div class="row tight">
         <span class="muted" style="font-size:11.5px" data-role="stat">
@@ -233,11 +334,18 @@ function sectionCard(s) {
       </div>
     </div>
 
+    <div class="tpl-meta">
+      ${dims.length ? `<span class="muted" style="font-size:11.5px">本节要求：
+        <b>${h(dimLabels.join("、"))}</b></span>` : `<span class="muted" style="font-size:11.5px">本节未配模板（按体裁默认判定）</span>`}
+      ${(tpl && tpl.role) ? `<div class="muted" style="font-size:11px;margin-top:3px">${h(tpl.role)}</div>` : ""}
+    </div>
+
     <div class="node-instruct" style="margin-top:9px">
-      <textarea rows="2" data-role="instruction" placeholder="在此节点输入指令，例如：只写金催化部分，引用不少于3条，强调区域选择性"></textarea>
+      <div data-role="fields"></div>
+      <input type="text" data-role="instruction" placeholder="补充指令（可留空 → 由系统按主题自拟）" style="margin-top:6px" />
       <div class="row tight" style="margin-top:6px">
-        <button class="btn small ghost" data-act="plan">征求意见</button>
-        <button class="btn small primary" data-act="compose">撰写此段</button>
+        <button class="btn small ghost" data-act="plan">预判本节够不够写</button>
+        <button class="btn small primary" data-act="compose">撰写本部分</button>
         <button class="btn small ghost" data-act="trace">决策轨迹</button>
         <span class="spacer"></span>
         <button class="btn small ghost" data-act="save" title="仅保存编辑框内容，不调用模型">保存修改</button>
@@ -256,7 +364,98 @@ function sectionCard(s) {
   </div>`;
 }
 
+/** 模板表单：字段来自模板声明，预设值直接可用；每个字段标出来源 */
+function renderFields(container, tpl) {
+  if (!container) return;
+  const fields = (tpl && tpl.fields) || [];
+  if (!fields.length) {
+    container.innerHTML = `<div class="muted" style="font-size:11.5px">
+      本部分没有可填字段——直接点「撰写本部分」即由系统按主题自拟。</div>`;
+    return;
+  }
+  container.innerHTML = fields.map((f) => {
+    const preset = f.preset === null || f.preset === undefined ? "" : String(f.preset);
+    const hasPreset = preset !== "";
+    const input = f.type === "textarea"
+      ? `<textarea rows="2" data-field="${h(f.key)}" placeholder="${h(f.placeholder || "")}"></textarea>`
+      : `<input type="${f.type === "number" ? "number" : "text"}" data-field="${h(f.key)}"
+           placeholder="${h(hasPreset ? `默认：${preset}` : (f.placeholder || ""))}" />`;
+    return `<div class="tpl-field" data-fieldrow="${h(f.key)}">
+      <label class="muted" style="font-size:11.5px">${h(f.label)}</label>
+      ${input}
+      ${hasPreset ? `<span class="chip-tag" data-role="preset">默认 ${h(preset)}</span>
+        <button class="btn small ghost" data-role="usepreset" style="padding:1px 7px;font-size:11px">用默认值</button>` : ""}
+      <span class="chip-tag off" data-role="srcmark">${hasPreset ? "未改" : "留空"}</span>
+    </div>`;
+  }).join("");
+  // "用默认值"把预设填进输入框（等价于用户接受默认；来源仍记为模板默认）
+  container.querySelectorAll("[data-role='usepreset']").forEach((btn) => {
+    btn.onclick = () => {
+      const row = btn.closest("[data-fieldrow]");
+      const input = row?.querySelector("[data-field]");
+      const preset = btn.previousElementSibling?.textContent?.replace("默认 ", "") || "";
+      if (input) {
+        input.value = preset;
+        input.dataset.acceptedPreset = "1";
+      }
+      const mark = row?.querySelector("[data-role='srcmark']");
+      if (mark) { mark.textContent = "已用默认"; mark.classList.remove("off"); }
+    };
+  });
+  container.querySelectorAll("[data-field]").forEach((input) => {
+    input.addEventListener("input", () => {
+      const row = input.closest("[data-fieldrow]");
+      const mark = row?.querySelector("[data-role='srcmark']");
+      if (mark) {
+        const touched = input.value.trim() !== "";
+        mark.textContent = touched ? "已改" : "留空";
+        mark.classList.toggle("off", !touched);
+      }
+    });
+  });
+}
+
+/** 读表单：只提交用户真正填写的字段（留空的交给规划/模板） */
+function readFields(box, tpl) {
+  const out = {};
+  const fields = (tpl && tpl.fields) || [];
+  // 用 dataset 逐项取值，不做选择器拼接：字段名来自 pack 数据，
+  // 拼进 `[data-field="..."]` 会因为转义规则不同而取不到（甚至注入）。
+  const inputs = [...box.querySelectorAll("[data-field]")];
+  fields.forEach((f) => {
+    const input = inputs.find((el) => el.dataset.field === String(f.key));
+    if (!input) return;
+    const value = String(input.value || "").trim();
+    // 显式点了"用默认值"也算用户确认，但不当作"用户修改"提交：
+    // 提交空值即可让后端回落到模板默认（纯并行，语义最清晰）
+    if (value !== "" && input.dataset.acceptedPreset !== "1") {
+      out[f.key] = value;
+    } else if (value !== "" && f.type === "number") {
+      out[f.key] = Number(value);
+    }
+  });
+  return out;
+}
+
 function bindProject() {
+  $("#wrPlan")?.addEventListener("click", async () => {
+    const box = $("#wrPlanBox");
+    if (box) box.innerHTML = loading("正在生成工作规划…（只规划，不检索）");
+    try {
+      // 不传指令 → 系统自拟模式；后端会按主题与体裁部分表排出各部分要写什么
+      const res = await api.post(
+        `/api/writing/projects/${current.project_id}/plan`, {});
+      if (!res.ok) throw new Error(res.error || "生成失败");
+      loadWorkPlan(res);
+      if (box) box.innerHTML = renderWorkPlan(res);
+      toast(res.mode === "user" ? "已按你的指令生成工作规划"
+                                : "已由系统自拟工作规划");
+    } catch (err) {
+      if (box) box.innerHTML = errorBox(err);
+      toastError(err);
+    }
+  });
+
   $("#wrOutline")?.addEventListener("click", async () => {
     try {
       const res = await api.post(`/api/writing/projects/${current.project_id}/outline`,
@@ -309,19 +508,22 @@ function bindSection(box) {
   const show = (el, html) => { if (!el) return; el.classList.remove("hidden"); el.innerHTML = html; };
 
   const section = () => sections.find((s) => String(s.section_key) === String(key)) || {};
+  const tpl = templates[String(key)] || section().template || null;
+  const fieldsBox = box.querySelector('[data-role="fields"]');
+  renderFields(fieldsBox, tpl);
 
   renderPreview(preview, section());
 
   box.querySelector('[data-act="plan"]')?.addEventListener("click", async () => {
     const text = instruction?.value.trim() || "";
-    if (!text) { toast("请先写下节点指令", "warn"); instruction?.focus(); return; }
-    setHint("规划中…（只做规划与判定，<b>不检索</b>）");
+    const fields = readFields(box, tpl);
+    setHint("预判中…（只做规划与判定，<b>不检索</b>）");
     planbox.classList.remove("hidden");
-    planbox.innerHTML = loading("正在规划并判定当前库是否够写…");
+    planbox.innerHTML = loading("正在按本部分的模板判定当前库是否够写…");
     try {
       const res = await api.post(
         `/api/writing/projects/${current.project_id}/sections/${encodeURIComponent(key)}/plan`,
-        { instruction: text });
+        { instruction: text, fields });
       if (!res.ok) throw new Error(res.error || "规划失败");
       planbox.innerHTML = renderPlan(res);
       setHint("");
@@ -332,17 +534,20 @@ function bindSection(box) {
   });
 
   box.querySelector('[data-act="compose"]')?.addEventListener("click", async () => {
+    // 指令与字段**都可留空** → 系统自拟（工作规划 + 模板默认）
     const text = instruction?.value.trim() || "";
-    if (!text) { toast("请先写下节点指令", "warn"); instruction?.focus(); return; }
-    setHint("已提交撰写作业…");
+    const fields = readFields(box, tpl);
+    const modeHint = (text || Object.keys(fields).length)
+      ? "按你的输入" : "由系统自拟";
+    setHint(`已提交撰写作业（${modeHint}）…`);
     try {
       const res = await api.post(
         `/api/writing/projects/${current.project_id}/sections/${encodeURIComponent(key)}/compose`,
-        { instruction: text });
+        { instruction: text, fields });
       if (!res.ok) throw new Error(res.error || "提交失败");
       jobbox.classList.remove("hidden");
       jobbox.innerHTML = loading("作业已启动，等待充分性判定…");
-      toast("撰写作业已启动");
+      toast(`撰写作业已启动（${modeHint}）`);
       pollJob(key, res.job_id, box);
     } catch (err) { toastError(err); setHint(""); }
   });
@@ -486,19 +691,28 @@ async function afterJobFinished(key, box, snap) {
   } catch { /* 刷新失败不影响结论展示 */ }
 
   const outcome = snap.outcome || result.status || snap.status;
-  if (outcome === "written") {
+  if (outcome === "written" || outcome === "written_with_gaps") {
     const invalid = result.invalid_indices || [];
+    const unmet = result.unmet_dimensions || [];
+    const withGaps = outcome === "written_with_gaps";
     jobbox.innerHTML = `<div class="card flat">
       ${metrics([
-        ["判定", "充足", `${result.rounds || 1} 轮`, "ok"],
+        ["判定", withGaps ? "带缺口" : "充足", `${result.rounds || 1} 轮`,
+         withGaps ? "warn" : "ok"],
         ["置信度", String(result.confidence ?? "—"), "阈值以上"],
         ["来源", result.generated_by === "llm" ? "模型" : "骨架降级",
-         result.generated_by === "llm" ? "" : "未调用模型", result.generated_by === "llm" ? "" : "warn"],
+         result.generated_by === "llm" ? "" : "未调用模型",
+         result.generated_by === "llm" ? "" : "warn"],
       ])}
+      ${withGaps ? `<div class="warnbox">⚠ 以下维度未达标，但本部分模板允许带缺口写作：
+        <b>${h(unmet.map((d) => DIM_LABELS[d] || d).join("、"))}</b>。
+        正文顶部已插入显式标注，标注范围内的推断请勿直接当结论引用。</div>` : ""}
       ${invalid.length ? `<div class="warnbox">⚠ 正文含 <b>${h(invalid.length)}</b> 处越界引文编号
         （${h(invalid.join("、"))}）——模型引用了素材清单外的来源，请核对后再用。</div>` : ""}
       <div class="muted" style="font-size:11.5px;margin-top:6px">
-        已写入正文，决策轨迹可点「决策轨迹」查看。</div>
+        模板 <code>${h(result.template_key || "—")}</code>
+        · ${h(result.work_plan_mode === "user" ? "按你的指令" : "系统自拟")}
+        · 已写入正文，决策轨迹可点「决策轨迹」查看。</div>
     </div>`;
     toast(result.generated_by === "llm" ? "已生成正文" : "已生成骨架草稿（未调用模型）",
           result.generated_by === "llm" ? "info" : "warn");

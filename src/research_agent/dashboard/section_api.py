@@ -23,6 +23,8 @@ from research_agent.writing import service as writing
 
 __all__ = [
     "plan_section",
+    "project_plan",
+    "section_templates",
     "compose_section",
     "job_status",
     "cancel_job",
@@ -38,18 +40,21 @@ def _open(db_path: str | Path | None = None) -> sqlite3.Connection:
 
 def plan_section(db_path: str | Path | None, project_id: int, section_key: str,
                  instruction: str = "",
-                 settings: Any = None) -> dict[str, Any]:
-    """征求意见：给出本节检索规划 + 当前库的充分性判定（不检索、不写正文）。"""
+                 settings: Any = None,
+                 user_fields: dict[str, Any] | None = None) -> dict[str, Any]:
+    """预判本节够不够写：给出检索规划 + 当前库的充分性判定（不检索、不写正文）。
+
+    指令与字段**都可选**：都不给时按工作规划与部分模板的默认值判定。
+    """
     conn = _open(db_path)
     try:
         model, reason = writing.default_model()
         result = sections.plan_section(
             conn, project_id=project_id, section_key=section_key,
-            instruction=instruction, planner_model=model,
-            settings=settings, evaluate=True,
+            instruction=instruction, user_fields=user_fields,
+            planner_model=model, settings=settings, evaluate=True,
         )
         result["model_unavailable_reason"] = reason if model is None else ""
-        # 让界面能直白地说明"判定是不是模型给的"
         verdict = result.get("sufficiency") or {}
         result["judged_by"] = ("llm" if model is not None
                                and result.get("planner_mode") == "llm"
@@ -67,23 +72,67 @@ def plan_section(db_path: str | Path | None, project_id: int, section_key: str,
         conn.close()
 
 
+def project_plan(db_path: str | Path | None, project_id: int,
+                 topic: str = "", instruction: str = "",
+                 settings: Any = None,
+                 persist: bool = True) -> dict[str, Any]:
+    """生成整篇工作规划（唯一规划节点）。
+
+    不传 ``instruction`` → 系统依主题自拟；传了 → 以用户指令为准。
+    """
+    conn = _open(db_path)
+    try:
+        model, reason = writing.default_model()
+        result = sections.build_project_plan(
+            conn, project_id=int(project_id), topic=topic,
+            instruction=instruction, settings=settings, planner_model=model,
+            persist=persist)
+        result["model_unavailable_reason"] = reason if model is None else ""
+        return result
+    except ValueError as exc:
+        return {"ok": False, "error": str(exc)}
+    finally:
+        conn.close()
+
+
+def section_templates(db_path: str | Path | None, genre: str | None = None
+                      ) -> dict[str, Any]:
+    """列出某体裁的部分模板（供界面渲染结构与字段）。"""
+    from research_agent.writing import section_template as stpl
+    key, spec = stpl.genre_definition(genre)
+    return {"ok": True, "genre": key,
+            "label": str(spec.get("label") or key),
+            "templates": stpl.list_templates(genre),
+            "sections": [
+                {"key": s.get("key"), "heading": s.get("heading"),
+                 "words": s.get("words"), "template": s.get("template"),
+                 "fields": stpl.collect_section_fields(key, str(s.get("key")))}
+                for s in (spec.get("sections") or []) if isinstance(s, dict)
+            ]}
+
+
 def compose_section(db_path: str | Path | None, project_id: int, section_key: str,
                     instruction: str = "",
-                    settings: Any = None) -> dict[str, Any]:
-    """撰写此段：启动异步作业，返回 ``job_id``。"""
+                    settings: Any = None,
+                    user_fields: dict[str, Any] | None = None) -> dict[str, Any]:
+    """撰写此部分：启动异步作业，返回 ``job_id``。
+
+    指令与字段都可选——都不给即"系统自拟"模式。
+    """
     path = str(db_path) if db_path else None
     try:
         job_id = sections.start_section_run(
             project_id=int(project_id), section_key=str(section_key),
-            instruction=str(instruction or ""), db_path=path,
-            settings=settings,
+            instruction=str(instruction or ""), user_fields=user_fields,
+            db_path=path, settings=settings,
         )
     except ValueError as exc:
         return {"ok": False, "error": str(exc)}
     except Exception as exc:  # noqa: BLE001 —— 作业启动失败要回给界面
         return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
     return {"ok": True, "job_id": job_id, "status": "running",
-            "project_id": int(project_id), "section_key": str(section_key)}
+            "project_id": int(project_id), "section_key": str(section_key),
+            "mode": "user" if (instruction or user_fields) else "auto"}
 
 
 def job_status(db_path: str | Path | None, job_id: str) -> dict[str, Any]:

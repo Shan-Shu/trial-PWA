@@ -251,20 +251,53 @@ def evaluate_sufficiency(
     settings: Settings | None = None,
     llm_analysis: dict[str, Any] | None = None,
     rounds_done: int = 0,
+    section_key: str = "",
+    genre: str | None = None,
+    focus_terms: list[str] | None = None,
+    dimension_spec: Any = None,
 ) -> dict[str, Any]:
     """判定当前库能否支撑该段写作。
 
+    **模板驱动**：传入 ``section_key`` / ``genre`` 时，本函数会去写作技能包取该部分的
+    模板，用它的 ``required_dimensions``（决定考哪几个维度）与 ``evidence_types``
+    （决定缺什么类型的证据）来判定；未被要求的维度权重为 0，不参与该部分的闸门。
+
     返回 ``{decision, confidence, dimensions, counts, reasons, retrieval_requests,
-    suggested_queries, rounds_done}``。``decision`` 取
-    ``sufficient`` / ``insufficient`` / ``exhausted``。
+    suggested_queries, rounds_done, unmet_dimensions, allow_gaps, ...}``。
+    ``decision`` 取 ``sufficient`` / ``insufficient`` / ``exhausted``。
     """
     s = _settings(settings)
     plan = plan or {}
     retrieval_plan = plan.get("retrieval_plan") or {}
     mission = plan.get("mission") or {}
 
-    # 命中文献的检索词：指令 + 章节标题 + Planner 检索词与硬约束（标题在此**有用**）
+    # 模板规格：显式传入优先，否则按 (genre, section_key) 从包里取
+    spec = dimension_spec
+    if spec is None and section_key:
+        try:
+            from research_agent.writing import section_template as stpl
+            spec = stpl.dimension_spec(genre, section_key)
+        except Exception:  # noqa: BLE001 —— 包缺失不应打断判定
+            spec = None
+    required_dimensions = list(getattr(spec, "required", []) or [])
+    template_weights = dict(getattr(spec, "weights", {}) or {})
+    evidence_types = list(getattr(spec, "evidence_types", []) or [])
+    # 带缺口写作**只对"配了模板且模板允许"的部分生效**：没挂模板（如 research_article
+    # 尚未配模板）时退回旧约定——证据不足就不硬写，避免悄悄产出无依据的正文。
+    has_template = bool(getattr(spec, "has_template", False))
+    allow_gaps = bool(getattr(spec, "allow_gaps", False)) and has_template
+    template_min_support = int(getattr(spec, "min_support", 1) or 1)
+    template_key = ""
+    if section_key:
+        try:
+            from research_agent.writing import section_template as _stpl
+            template_key = _stpl.template_for_section(genre, section_key)[0]
+        except Exception:  # noqa: BLE001
+            template_key = ""
+
+    # 命中文献的检索词：规划要点 + 用户指令 + 标题 + Planner 检索词与硬约束
     demand_parts = [
+        " ".join(str(x) for x in (focus_terms or [])),
         str(instruction or ""),
         str(heading or ""),
         " ".join(str(x) for x in (retrieval_plan.get("query_variants") or [])),
@@ -280,6 +313,7 @@ def evaluate_sufficiency(
     # 也不含 Planner 的 seed_terms：那是**检索用**词（离线兜底还会从标题/主题
     # 分出一堆中文碎片），拿它当"写作要求"会把库的语言差异误判成证据缺口。
     requirement_parts = [
+        " ".join(str(x) for x in (focus_terms or [])),
         str(instruction or ""),
         " ".join(str(x) for x in (retrieval_plan.get("must_cover") or [])),
     ]
@@ -403,6 +437,32 @@ def evaluate_sufficiency(
         # 小库不该被"证据 ≥ 3 条"卡死（实测补检到 3 篇仍被 evidence 闸门挡住）。
         min_evidence = max(1, min(min_evidence, len(evidence_ids) or 1))
     evidence_score = min(1.0, len(evidence_ids) / max(1, min_evidence))
+
+    # ---------------------------------------------------------- 维度 6：可比研究
+    # "对比/分类"型部分（综述的版图与机制节、实验的分组与设计节）需要的不是更多文献，
+    # 而是**可两两比较的证据**：同一关系类型或同类超边至少有两条。这是模板
+    # required_dimensions 里 comparison 的实现。
+    comparison_count = 0
+    try:
+        row = conn.execute(
+            "SELECT COUNT(*) AS c FROM ("
+            "  SELECT hyperedge_type, COUNT(*) AS n FROM ontology_hyperedges "
+            "  GROUP BY hyperedge_type HAVING n > 1)").fetchone()
+        comparison_count = int(row["c"] or 0) if row else 0
+        if not comparison_count:
+            row = conn.execute(
+                "SELECT COUNT(*) AS c FROM ("
+                "  SELECT relation_type, COUNT(*) AS n FROM ontology_edges "
+                "  GROUP BY relation_type HAVING n > 1)").fetchone()
+            comparison_count = int(row["c"] or 0) if row else 0
+    except sqlite3.Error:
+        comparison_count = 0
+    min_comparison = int(_threshold(s, "section_sufficiency_min_comparison", 1))
+    if bool(getattr(s, "section_adaptive_paper_floor", True)) \
+            and not comparison_count:
+        min_comparison = 1
+    comparison_score = min(1.0, comparison_count / max(1, min_comparison))
+
     # ---------------------------------------------------------- 加权汇总
     dimensions = {
         "papers": round(papers_score, 3),
@@ -410,14 +470,26 @@ def evaluate_sufficiency(
         "conditions": round(conditions_score, 3),
         "requirements": round(requirements_score, 3),
         "evidence": round(evidence_score, 3),
+        "comparison": round(comparison_score, 3),
     }
-    weights = {
-        "papers": _threshold(s, "section_weight_papers", 0.30),
-        "knowledge": _threshold(s, "section_weight_knowledge", 0.25),
-        "conditions": _threshold(s, "section_weight_conditions", 0.20),
-        "requirements": _threshold(s, "section_weight_requirements", 0.15),
-        "evidence": _threshold(s, "section_weight_evidence", 0.10),
-    }
+    if template_weights:
+        # **模板驱动**：未被本部分列为 required 的维度权重为 0，不参与它的判定。
+        # 注意要区分"挂了模板但没声明维度"与"根本没挂模板"：
+        # 前者按模板权重（可能全 0），后者应退回体裁默认权重。
+        if has_template:
+            weights = {k: float(template_weights.get(k, 0.0))
+                       for k in dimensions}
+        else:
+            weights = dict(template_weights)
+    else:
+        weights = {
+            "papers": _threshold(s, "section_weight_papers", 0.30),
+            "knowledge": _threshold(s, "section_weight_knowledge", 0.25),
+            "conditions": _threshold(s, "section_weight_conditions", 0.20),
+            "comparison": _threshold(s, "section_weight_comparison", 0.05),
+            "requirements": _threshold(s, "section_weight_requirements", 0.15),
+            "evidence": _threshold(s, "section_weight_evidence", 0.10),
+        }
     total_weight = sum(weights.values()) or 1.0
     confidence = sum(dimensions[k] * weights[k] for k in dimensions) / total_weight
     confidence = round(max(0.0, min(1.0, confidence)), 3)
@@ -432,7 +504,23 @@ def evaluate_sufficiency(
     gates: list[dict[str, Any]] = []
 
     def _gate(name: str, ok: bool, detail: str) -> None:
-        gates.append({"gate": name, "passed": bool(ok), "detail": detail})
+        """记录一个判定闸门。
+
+        规则（模板驱动）：
+
+        - **该部分挂了模板** → 只有模板列为 required 的维度才是"必考"。
+          其他维度照常算分并展示，但不设闸门、不封顶——否则综述的范围节会被
+          无关的量化条件挡住，实验的目标节会被"可比证据"挡住。
+        - **该部分没挂模板**（如尚未配模板的体裁）→ 沿用旧行为：
+          命中文献 / 知识覆盖 / 量化条件 / 要求覆盖 / 可用证据 都按各自的最低
+          阈值设闸门，避免"换个体裁就悄悄放宽判定"。
+        """
+        if has_template:
+            required = name in required_dimensions
+        else:
+            required = True
+        gates.append({"gate": name, "passed": bool(ok), "detail": detail,
+                      "required": required})
 
     if tokens:
         _gate("papers", len(paper_keys) >= min_papers,
@@ -440,17 +528,34 @@ def evaluate_sufficiency(
     if paper_keys:
         _gate("knowledge", coverage >= min_coverage,
               f"已抽取知识比例 {coverage:.0%} / 需 ≥ {min_coverage:.0%}")
-    if total_hyper:
+    # conditions 闸门：库里有超边时照常评估；库**空**但模板明确要求量化条件时
+    # 也要给出 0/0 的结论——否则"这个库还没有任何可量化的证据"会被静默跳过，
+    # 部分明明缺条件却判成充足（实测就是这样漏掉的）。
+    if total_hyper or (has_template and "conditions" in required_dimensions):
         _gate("conditions", quantity_ratio >= min_quantity,
               f"带量化条件的超边 {with_quantity}/{total_hyper} / 需 ≥ {min_quantity:.0%}")
     if requirements:
         _gate("requirements", req_ratio >= min_req,
-              f"指令要求覆盖 {len(covered)}/{len(requirements)} / 需 ≥ {min_req:.0%}")
+              f"要求覆盖 {len(covered)}/{len(requirements)} / 需 ≥ {min_req:.0%}")
     if paper_keys:
         _gate("evidence", len(evidence_ids) >= min_evidence,
               f"可用证据 {len(evidence_ids)} 条 / 需 ≥ {min_evidence} 条")
+    # comparison 是本次新增的"对比/分类型部分"专有维度：**只有模板明确要求它时
+    # 才设闸门**。没挂模板的部分（尚未配模板的体裁）不该被这个新维度挡住——
+    # 否则会在升级后悄悄改变旧体裁的判定结果。
+    if has_template and "comparison" in required_dimensions:
+        _gate("comparison", comparison_count >= min_comparison,
+              f"可比证据组 {comparison_count} 组 / 需 ≥ {min_comparison} 组")
 
-    failed_gates = [g for g in gates if not g["passed"]]
+    # 未被满足的**必考**维度：允许带缺口写作时，用它生成正文顶部的标注
+    unmet_dimensions = [g["gate"] for g in gates
+                        if not g["passed"] and g.get("required", True)]
+    # 只有**必考**维度的不达标才参与封顶与结论。非必考维度即使不达标，
+    # 该部分也不因此判不足（实测：未配模板的 research_article 被
+    # "量化条件"这种非必考闸门挡住，行为与旧版不一致）。
+    failed_gates = [g for g in gates
+                    if not g["passed"] and g.get("required", True)]
+
     if failed_gates:
         confidence = round(min(confidence, min(caps)), 3)
 
@@ -470,7 +575,11 @@ def evaluate_sufficiency(
          "quantity_ratio": round(quantity_ratio, 2), "min_quantity": min_quantity,
          "requirements": len(requirements), "covered": covered[:6],
          "missing": missing[:6], "min_req": min_req,
-         "evidence": len(evidence_ids), "min_evidence": min_evidence},
+         "evidence": len(evidence_ids), "min_evidence": min_evidence,
+         "comparison": comparison_count, "min_comparison": min_comparison,
+         "met_dimensions": [g["gate"] for g in gates
+                            if g["passed"] and g.get("required", True)],
+         "unmet_dimensions": unmet_dimensions},
         rounds_done, max_rounds, gates,
     )
 
@@ -504,12 +613,21 @@ def evaluate_sufficiency(
             "evidence_ids": len(evidence_ids),
             "requirements_total": len(requirements),
             "requirements_missing": missing,
+            "comparison_groups": comparison_count,
+            "min_comparison": min_comparison,
         },
         "paper_keys": paper_keys[:200],
         "evidence_ids": evidence_ids[:40],
         "reasons": reasons,
         "gates": gates,
         "failed_gates": [g["gate"] for g in failed_gates],
+        "unmet_dimensions": unmet_dimensions,
+        "met_dimensions": [g["gate"] for g in gates
+                           if g["passed"] and g.get("required", True)],
+        "required_dimensions": required_dimensions,
+        "evidence_types": evidence_types,
+        "allow_gaps": allow_gaps,
+        "template_key": template_key,
         "suggested_queries": suggested[:6],
         "retrieval_requests": ([] if decision == "sufficient"
                                else [{"query_terms": suggested[:6],
@@ -546,8 +664,12 @@ def _build_reasons(decision: str, confidence: float, threshold: float,
     if info["evidence"] < info["min_evidence"]:
         reasons.append(
             f"可用证据编号 {info['evidence']} 条 < 阈值 {info['min_evidence']} 条")
+    if info.get("comparison", 0) < info.get("min_comparison", 1):
+        reasons.append(
+            f"可比证据组 {info.get('comparison', 0)} 组 < 阈值 "
+            f"{info.get('min_comparison', 1)} 组（缺少可两两比较的同类证据）")
     if not reasons:
-        reasons.append(f"五个维度均达标（confidence={confidence}）")
+        reasons.append(f"各必考维度均达标（confidence={confidence}）")
     if decision == "exhausted":
         reasons.append(
             f"已用尽补检预算（{rounds_done}/{max_rounds} 轮）仍不足，不生成正文")

@@ -25,6 +25,8 @@ from research_agent.db import connect, utcnow
 from research_agent.library.jobs import LibraryJobManager
 from research_agent.study.graph import StudyServices
 from research_agent.writing.section_graph import build_section_graph
+from research_agent.writing.section_plan import (
+    build_work_plan, section_directive)
 from research_agent.writing.service import (
     default_model, get_project, list_sections, save_section)
 
@@ -37,6 +39,7 @@ __all__ = [
     "section_job_status",
     "cancel_section_run",
     "plan_section",
+    "build_project_plan",
     "get_section_trace",
     "latest_section_state",
     "SECTION_TERMINAL",
@@ -69,10 +72,16 @@ def _save_round(conn: sqlite3.Connection, *, run_id: str, round_no: int,
                 plan: dict[str, Any] | None = None,
                 collection: dict[str, Any] | None = None,
                 content_chars: int = 0, generated_by: str = "",
-                error: str = "") -> None:
+                error: str = "", template_key: str = "",
+                field_source: dict[str, Any] | None = None,
+                unmet: list[str] | None = None) -> None:
     """写入/更新一轮轨迹（``(run_id, round)`` 为主键）。"""
     verdict = verdict or {}
     plan = plan or {}
+    field_json = (json.dumps(field_source, ensure_ascii=False)
+                  if field_source else None)
+    unmet_json = (json.dumps(list(unmet or []), ensure_ascii=False)
+                  if unmet else None)
     row = conn.execute(
         "SELECT 1 FROM section_runs WHERE run_id=? AND round=?",
         (run_id, int(round_no)),
@@ -83,12 +92,14 @@ def _save_round(conn: sqlite3.Connection, *, run_id: str, round_no: int,
         json.dumps(verdict, ensure_ascii=False) if verdict else None,
         json.dumps(collection, ensure_ascii=False) if collection else None,
         int(content_chars), str(generated_by or ""), str(error or ""),
+        str(template_key or "") or None, field_json, unmet_json,
     )
     if row:
         conn.execute(
             "UPDATE section_runs SET stage=?, decision=?, plan_json=?, "
             "sufficiency_json=?, collection_json=?, content_chars=?, "
-            "generated_by=?, error=?, instruction=?, ts=? "
+            "generated_by=?, error=?, template_key=?, field_source_json=?, "
+            "unmet_json=?, instruction=?, ts=? "
             "WHERE run_id=? AND round=?",
             (*payload, instruction, utcnow(), run_id, int(round_no)),
         )
@@ -96,8 +107,9 @@ def _save_round(conn: sqlite3.Connection, *, run_id: str, round_no: int,
         conn.execute(
             "INSERT INTO section_runs(run_id, round, project_id, section_key, "
             "instruction, stage, decision, plan_json, sufficiency_json, "
-            "collection_json, content_chars, generated_by, error, ts) "
-            "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "collection_json, content_chars, generated_by, error, "
+            "template_key, field_source_json, unmet_json, ts) "
+            "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (run_id, int(round_no), int(project_id), str(section_key),
              instruction, *payload, utcnow()),
         )
@@ -117,6 +129,27 @@ def _update_section_grounding(conn: sqlite3.Connection, *, project_id: int,
     conn.commit()
 
 
+def _load_work_plan(conn: sqlite3.Connection,
+                    project_id: int) -> dict[str, Any]:
+    """读取项目已保存的工作规划（唯一规划节点的产物）。"""
+    try:
+        row = conn.execute(
+            "SELECT plan_json FROM writing_projects WHERE project_id=?",
+            (int(project_id),)).fetchone()
+    except sqlite3.Error:
+        return {}
+    if not row:
+        return {}
+    raw = row["plan_json"] if "plan_json" in row.keys() else None
+    if not raw:
+        return {}
+    try:
+        data = json.loads(raw)
+    except (json.JSONDecodeError, TypeError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
 # ------------------------------------------------------------------ 作业体
 
 def run_section_workflow(
@@ -124,6 +157,7 @@ def run_section_workflow(
     project_id: int,
     section_key: str,
     instruction: str = "",
+    user_fields: dict[str, Any] | None = None,
     db_path: str | None = None,
     settings: Settings | None = None,
     services: StudyServices | None = None,
@@ -134,10 +168,15 @@ def run_section_workflow(
     progress_cb: Any = None,
     cancel_event: threading.Event | None = None,
 ) -> dict[str, Any]:
-    """作业体：跑一次节点写作链并落库。可被 ``LibraryJobManager.start`` 驱动。"""
+    """作业体：跑一次部分写作链并落库。可被 ``LibraryJobManager.start`` 驱动。
+
+    ``instruction`` 与 ``user_fields`` 都是**可选**：
+    两者都空时走"系统自拟"——由工作规划节点与部分模板决定这一部分写什么。
+    """
     s = settings or default_settings
     path = db_path if db_path is not None else s.db_path
     run_id = uuid.uuid4().hex[:12]
+    user_fields = dict(user_fields or {})
 
     def _progress(percent: float, message: str = "") -> None:
         if progress_cb is not None:
@@ -157,16 +196,44 @@ def run_section_workflow(
         if not section:
             raise ValueError(f"大纲节点不存在: {section_key}")
         heading = str(section.get("heading") or section_key)
-        section_note = ""
         words = int(section.get("words") or 0)
+        genre = str(project.get("genre") or "")
+        # 部分模板：这一部分写什么、考哪几个维度、有哪些可填字段。
+        # **没挂模板不报错**：体裁可能还没配模板（如 research_article），
+        # 此时退回"无模板"路径——判定用体裁默认权重，提示词只带主题与指令。
+        from research_agent.writing import section_template as stpl
+        template_key, _tpl = stpl.template_for_section(genre, section_key)
 
         instruction = str(instruction or "").strip()
-        if not instruction:
-            raise ValueError("节点指令不能为空")
+        # 指令**可选**：没给就走"系统自拟"（规划节点/模板默认），不再报错
+        section_heading_note = str(
+            (stpl.genre_definition(genre)[1].get("section_notes") or {})
+            .get(section_key) or "")
+
+        # 工作规划：优先用项目里已存的，没有就现在生成一份（auto 模式）
+        work_plan = _load_work_plan(db, project_id)
+        if not work_plan:
+            work_plan = build_work_plan(
+                db, project_id=int(project_id),
+                topic=str(project.get("topic") or project.get("title") or ""),
+                instruction=instruction, settings=s,
+                planner_model=planner_model, persist=True)
+        directive = section_directive(work_plan, section_key)
+        focus = list(directive.get("focus") or _tpl.get("focus") or [])
+        role = str(directive.get("role") or _tpl.get("role") or "")
+        fields = stpl.resolve_fields(genre, section_key,
+                                     user_values=user_fields,
+                                     plan_values=directive.get("plan_fields"))
+        fields_block = stpl.field_block(genre, section_key, fields,
+                                        role=role, focus=focus,
+                                        evidence_types=list(
+                                            directive.get("evidence_types")
+                                            or _tpl.get("evidence_types") or []))
+        field_sources = stpl.field_source_summary(fields)
 
         from research_agent.writing.section_graph import build_section_request
         planning_request = build_section_request(project, heading, instruction,
-                                                 section_note)
+                                                 section_heading_note)
 
         services = services or StudyServices.from_env(require_llms=False)
 
@@ -222,7 +289,13 @@ def run_section_workflow(
             "section_key": str(section_key),
             "heading": heading,
             "instruction": instruction,
-            "section_note": section_note,
+            "genre": genre,
+            "focus": focus,
+            "role": role,
+            "fields": fields,
+            "fields_block": fields_block,
+            "template_key": template_key,
+            "section_note": section_heading_note,
             "words": words,
             "topic": str(project.get("topic") or project.get("title") or ""),
             "planning_request": planning_request,
@@ -235,6 +308,11 @@ def run_section_workflow(
         decision = str(verdict.get("decision") or "")
         status = str(final.get("status") or decision or "error")
         composed = final.get("section") or {}
+        # 带缺口写作：判定未通过但模板允许，且确实写出了正文
+        unmet = list(verdict.get("unmet_dimensions") or [])
+        evidence_types = list(verdict.get("evidence_types") or [])
+        wrote_with_gaps = (status == "written" and bool(unmet)
+                           and decision != "sufficient")
 
         if cancel_event is not None and cancel_event.is_set():
             _save_round(db, run_id=run_id, round_no=max(rounds_written or {0}),
@@ -249,16 +327,20 @@ def run_section_workflow(
             save_section(db, project_id, section_key, heading, content,
                          list(composed.get("citations") or []))
             round_no = max(rounds_written or {0})
+            # 带缺口写作时状态标 written_with_gaps：正文有内容，但轨迹里保留"未达标"
+            section_status = "written_with_gaps" if wrote_with_gaps else "written"
             _save_round(db, run_id=run_id, round_no=round_no,
                         project_id=project_id, section_key=section_key,
                         instruction=instruction, stage="done", verdict=verdict,
                         plan=final.get("plan") or {}, content_chars=len(content),
-                        generated_by=str(composed.get("generated_by") or ""))
+                        generated_by=str(composed.get("generated_by") or ""),
+                        template_key=template_key,
+                        field_source=field_sources, unmet=unmet)
             _update_section_grounding(
                 db, project_id=project_id, section_key=section_key, run_id=run_id,
                 grounded_on={
                     "run_id": run_id,
-                    "status": "written",
+                    "status": section_status,
                     "decision": decision,
                     "confidence": verdict.get("confidence"),
                     "paper_keys": verdict.get("paper_keys") or [],
@@ -268,19 +350,32 @@ def run_section_workflow(
                     "generated_by": composed.get("generated_by"),
                     "material_count": composed.get("material_count"),
                     "rounds": round_no,
+                    "template_key": template_key,
+                    "field_sources": field_sources,
+                    "unmet_dimensions": unmet,
+                    "evidence_types": verdict.get("evidence_types") or [],
+                    "gap_notice": composed.get("gap_notice") or "",
+                    "work_plan_mode": str(work_plan.get("mode") or ""),
                 })
             if composed.get("invalid_indices"):
                 _progress(100.0, "完成（但正文含越界引文，请检查）")
+            elif wrote_with_gaps:
+                _progress(100.0, "完成（证据有缺口，已在正文顶部标注）")
             else:
                 _progress(100.0, "完成")
             return {
                 "run_id": run_id,
-                "status": "written",
+                "status": section_status,
                 "decision": decision,
                 "confidence": verdict.get("confidence"),
                 "rounds": round_no,
                 "generated_by": composed.get("generated_by"),
                 "invalid_indices": composed.get("invalid_indices") or [],
+                "unmet_dimensions": unmet,
+                "evidence_types": verdict.get("evidence_types") or [],
+                "template_key": template_key,
+                "field_sources": field_sources,
+                "work_plan_mode": str(work_plan.get("mode") or ""),
                 "sufficiency": verdict,
                 "section_key": section_key,
                 "heading": heading,
@@ -342,6 +437,7 @@ def start_section_run(
     project_id: int,
     section_key: str,
     instruction: str = "",
+    user_fields: dict[str, Any] | None = None,
     db_path: str | None = None,
     settings: Settings | None = None,
     services: StudyServices | None = None,
@@ -350,7 +446,7 @@ def start_section_run(
     compose_model: Any = None,
     compose_model_reason: str = "",
 ) -> str:
-    """启动一次节点写作作业，立即返回 ``job_id``（进度见 ``section_job_status``）。"""
+    """启动一次部分写作作业，立即返回 ``job_id``。"""
     manager = ManagerForSections(db_path)
     return manager.start(
         ACTION,
@@ -358,6 +454,7 @@ def start_section_run(
         project_id=int(project_id),
         section_key=str(section_key),
         instruction=str(instruction or ""),
+        user_fields=dict(user_fields or {}),
         db_path=db_path,
         settings=settings,
         services=services,
@@ -377,6 +474,30 @@ def cancel_section_run(job_id: str, db_path: str | None = None) -> bool:
     return ManagerForSections(db_path).cancel(job_id)
 
 
+# ------------------------------------------------------------------ 工作规划
+
+def build_project_plan(
+    conn: sqlite3.Connection,
+    *,
+    project_id: int,
+    topic: str = "",
+    instruction: str = "",
+    settings: Settings | None = None,
+    planner_model: Any = None,
+    persist: bool = True,
+) -> dict[str, Any]:
+    """生成整篇工作规划（唯一规划节点的对外入口）。
+
+    ``instruction`` 为空 → ``mode="auto"``，系统依主题自拟；
+    非空 → ``mode="user"``，用户指令优先，规划不覆盖。
+    """
+    s = settings or default_settings
+    return build_work_plan(
+        conn, project_id=int(project_id), topic=topic,
+        instruction=instruction, settings=s, planner_model=planner_model,
+        persist=persist)
+
+
 # ------------------------------------------------------------------ 只规划
 
 def plan_section(
@@ -385,13 +506,15 @@ def plan_section(
     project_id: int,
     section_key: str,
     instruction: str = "",
+    user_fields: dict[str, Any] | None = None,
     settings: Settings | None = None,
     planner_model: Any = None,
     evaluate: bool = True,
 ) -> dict[str, Any]:
-    """只做「检索规划 + 充分性判定」，**不检索、不生成**（"征求意见"按钮）。
+    """只做「检索规划 + 充分性判定」，**不检索、不生成**。（"预判本节够不够写"）
 
-    让用户先看清"这一节要检索什么、现有库够不够"，再决定是否花配额补检。
+    指令与字段都是可选的：都没给时按工作规划与模板默认判定——
+    这正是"系统自拟"模式下的预判。
     """
     s = settings or default_settings
     project = get_project(conn, project_id)
@@ -404,12 +527,37 @@ def plan_section(
         return {"ok": False, "error": f"大纲节点不存在: {section_key}"}
     heading = str(section.get("heading") or section_key)
     instruction = str(instruction or "").strip()
+    genre = str(project.get("genre") or "")
+
+    from research_agent.writing import section_template as stpl
+    template_key, tpl = stpl.template_for_section(genre, section_key)
+    section_note = str(
+        (stpl.genre_definition(genre)[1].get("section_notes") or {})
+        .get(section_key) or "")
+
+    work_plan = _load_work_plan(conn, project_id)
+    if not work_plan:
+        work_plan = build_work_plan(
+            conn, project_id=int(project_id),
+            topic=str(project.get("topic") or project.get("title") or ""),
+            instruction=instruction, settings=s, planner_model=planner_model,
+            persist=True)
+    directive = section_directive(work_plan, section_key)
+    focus = list(directive.get("focus") or tpl.get("focus") or [])
+    role = str(directive.get("role") or tpl.get("role") or "")
+    fields = stpl.resolve_fields(genre, section_key,
+                                 user_values=user_fields,
+                                 plan_values=directive.get("plan_fields"))
+    fields_block = stpl.field_block(
+        genre, section_key, fields, role=role, focus=focus,
+        evidence_types=list(directive.get("evidence_types")
+                            or tpl.get("evidence_types") or []))
 
     from research_agent.study.planner import make_planner_node
     from research_agent.writing.section_graph import (
         build_section_request, normalize_fallback_plan)
 
-    request = build_section_request(project, heading, instruction, "")
+    request = build_section_request(project, heading, instruction, section_note)
     node = make_planner_node(planner_model, conn=conn, settings=s)
     out = node({"request": request, "run_id": None})
     plan = out.get("plan") or {}
@@ -428,6 +576,19 @@ def plan_section(
         "planner_mode": plan.get("planner_mode") or "",
         "planner_model_error": plan.get("planner_model_error") or out.get("error") or "",
         "status": status,
+        # 模板与双模信息：界面据此渲染"本节要什么"与字段来源
+        "template_key": template_key,
+        "role": role,
+        "focus": focus,
+        "focus_source": str(directive.get("focus_source") or ""),
+        "fields": fields,
+        "field_sources": stpl.field_source_summary(fields),
+        "fields_block": fields_block,
+        "required_dimensions": list(directive.get("required_dimensions")
+                                    or tpl.get("required_dimensions") or []),
+        "evidence_types": list(directive.get("evidence_types")
+                               or tpl.get("evidence_types") or []),
+        "work_plan_mode": str(work_plan.get("mode") or ""),
     }
     if not result["ok"]:
         result["error"] = str(out.get("error") or "规划未产出任务单")
@@ -435,10 +596,11 @@ def plan_section(
 
     if evaluate:
         from research_agent.writing.sufficiency import evaluate_sufficiency
-        # 征求意见阶段一律按"还没补检"判定，让用户看到**当前**库的真实状态
+        # 预判阶段一律按"还没补检"判定，让用户看到**当前**库的真实状态
         result["sufficiency"] = evaluate_sufficiency(
             conn, plan=plan, instruction=instruction, heading=heading,
-            settings=s, rounds_done=0,
+            settings=s, rounds_done=0, section_key=section_key, genre=genre,
+            focus_terms=focus,
         )
     return result
 

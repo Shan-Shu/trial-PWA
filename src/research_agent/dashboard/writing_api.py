@@ -81,8 +81,31 @@ def project_detail(db_path: str | Path | None,
         project = writing.get_project(conn, project_id)
         if not project:
             return {"ok": False, "error": f"写作项目不存在: {project_id}"}
-        return {"ok": True, "project": project,
-                "sections": writing.list_sections(conn, project_id)}
+        # 带上工作规划与逐部分模板信息：界面一次请求即可渲染
+        # "本部分要写什么、要什么证据、有哪些可填字段"，不必再多打一轮接口。
+        from research_agent.writing import section_template as stpl
+        from research_agent.writing.section_service import _load_work_plan
+        genre = str(project.get("genre") or "")
+        plan = _load_work_plan(conn, int(project_id))
+        planned = {str(s.get("section_key")): s
+                   for s in (plan.get("sections") or [])}
+        sections = writing.list_sections(conn, project_id)
+        for section in sections:
+            key = str(section.get("section_key"))
+            tpl_key, tpl = stpl.template_for_section(genre, key)
+            item = planned.get(key) or {}
+            section["template"] = tpl_key
+            section["required_dimensions"] = list(
+                item.get("required_dimensions")
+                or tpl.get("required_dimensions") or [])
+            section["evidence_types"] = list(
+                item.get("evidence_types") or tpl.get("evidence_types") or [])
+            section["role"] = str(item.get("role") or tpl.get("role") or "")
+            section["fields"] = list(
+                item.get("fields") or stpl.collect_section_fields(genre, key))
+            section["generates_body"] = bool(tpl_key)
+        return {"ok": True, "project": project, "sections": sections,
+                "work_plan": plan or None}
     finally:
         conn.close()
 

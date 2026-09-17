@@ -444,6 +444,23 @@ def create_app(db_path: str | Path | None = None,
         return wrtapi.export_project(request.app.state.db_path, project_id)
 
     # ------------------------------------------ 大纲节点指令工作流（合并新增）
+    # ------------------------------------------ 工作规划（唯一的规划节点）
+    @app.post("/api/writing/projects/{project_id}/plan")
+    def writing_project_plan(project_id: int, request: Request,
+                             payload: dict | None = Body(default=None)) -> dict:
+        payload = payload or {}
+        return secapi.project_plan(
+            request.app.state.db_path, project_id,
+            topic=str(payload.get("topic") or ""),
+            instruction=str(payload.get("instruction") or ""),
+            settings=request.app.state.settings,
+            persist=bool(payload.get("persist", True)))
+
+    @app.get("/api/writing/templates")
+    def writing_templates(genre: str = "", request: Request = None) -> dict:
+        return secapi.section_templates(
+            request.app.state.db_path, genre or None)
+
     @app.post("/api/writing/projects/{project_id}/sections/{section_key}/plan")
     def section_plan(project_id: int, section_key: str, request: Request,
                      payload: dict | None = Body(default=None)) -> dict:
@@ -451,18 +468,18 @@ def create_app(db_path: str | Path | None = None,
         return secapi.plan_section(
             request.app.state.db_path, project_id, section_key,
             str(payload.get("instruction") or ""),
-            settings=request.app.state.settings)
+            settings=request.app.state.settings,
+            user_fields=payload.get("fields"))
 
     @app.post("/api/writing/projects/{project_id}/sections/{section_key}/compose")
     def section_compose(project_id: int, section_key: str, request: Request,
                         payload: dict | None = Body(default=None)) -> dict:
         payload = payload or {}
-        instruction = str(payload.get("instruction") or "").strip()
-        if not instruction:
-            return {"ok": False, "error": "节点指令不能为空"}
         return secapi.compose_section(
-            request.app.state.db_path, project_id, section_key, instruction,
-            settings=request.app.state.settings)
+            request.app.state.db_path, project_id, section_key,
+            str(payload.get("instruction") or ""),
+            settings=request.app.state.settings,
+            user_fields=payload.get("fields"))
 
     @app.get("/api/writing/section-jobs/{job_id}")
     def section_job(job_id: str, request: Request) -> dict:

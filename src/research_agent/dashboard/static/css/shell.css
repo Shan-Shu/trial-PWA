@@ -371,6 +371,55 @@
   color: #fcd34d;
 }
 
+/* 部分模板：本节要求与职责说明 */
+.tpl-meta {
+  margin-top: 8px;
+  padding: 6px 9px;
+  border-radius: 6px;
+  background: rgba(59,130,246,.06);
+  border-left: 2px solid rgba(59,130,246,.45);
+}
+
+/* 模板字段行：标签 + 输入 + 默认值 + 来源标记 */
+.tpl-field {
+  display: grid;
+  grid-template-columns: 1fr auto auto;
+  grid-template-areas: "label label label" "input preset mark";
+  gap: 5px 8px;
+  align-items: center;
+  margin-bottom: 8px;
+}
+.tpl-field > label { grid-area: label; }
+.tpl-field > input, .tpl-field > textarea {
+  grid-area: input;
+  width: 100%;
+}
+.tpl-field > textarea { grid-column: 1 / -1; }
+.tpl-field > [data-role="preset"] { grid-area: preset; }
+.tpl-field > [data-role="usepreset"] { grid-area: preset; justify-self: end; }
+.tpl-field > [data-role="srcmark"] { grid-area: mark; }
+
+/* 数据表：工作规划表 */
+.table-wrap table.data {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+table.data th, table.data td {
+  text-align: left;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--border);
+  vertical-align: top;
+}
+table.data th {
+  color: var(--text-muted);
+  font-weight: 600;
+  font-size: 11.5px;
+  white-space: nowrap;
+}
+table.data tbody tr:hover { background: var(--bg-hover); }
+table.data td .chip-tag { margin-left: 4px; }
+
 /* 响应式：窄屏折叠侧栏 */
 @media (max-width: 860px) {
   .app { grid-template-columns: 1fr; }
