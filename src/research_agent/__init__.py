@@ -1,7 +1,7 @@
 """research-agent：基于 LangGraph 的多模型协作科研辅助 Agent（环境骨架）。"""
 from __future__ import annotations
 
-__version__ = "0.4.4"
+__version__ = "0.4.5"
 
 
 def main() -> None:

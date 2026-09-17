@@ -1,6 +1,6 @@
 [project]
 name = "research-agent"
-version = "0.4.4"
+version = "0.4.5"
 description = "基于 LangGraph 的多模型协作科研辅助 Agent（多模型编排/科研检索/PDF 解析）"
 readme = "README.md"
 requires-python = ">=3.12"
