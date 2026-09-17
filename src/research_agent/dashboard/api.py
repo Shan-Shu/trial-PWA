@@ -348,6 +348,18 @@ def agent_status(db_path: Path | str | None = None,
 
 def node_status(db_path: Path | str | None = None,
                 recent: int = 30) -> dict[str, Any]:
+    """聚合数据构建与研究流程各节点状态、事件、日志。
+
+    .. deprecated:: 0.4.5
+       节点清单已迁到登记表（`writing/node_registry.py`）。本函数保留是为了
+       兼容既有看板与旧端点；**新的界面请用** :func:`nodes_overview`——它含
+       写作台的访谈节点，并把"未执行"如实标出。
+    """
+    return nodes_overview(db_path, recent=recent)
+
+
+def _legacy_node_status(db_path: Path | str | None = None,
+                        recent: int = 30) -> dict[str, Any]:
     """聚合数据构建与研究流程各节点状态、事件、日志。"""
     defs: list[dict[str, Any]] = [
         {"id": "retrieval", "group": "数据构建", "label": "文献检索节点",
@@ -446,6 +458,196 @@ def node_status(db_path: Path | str | None = None,
         return {"nodes": nodes, "recent": recent_events[:recent]}
     finally:
         conn.close()
+
+
+#: 节点状态语义（界面按此显示，不再用"有事件就算完成"这种骗人的推断）
+NODE_STATUS_LABELS = {
+    "idle": "未执行",
+    "running": "执行中",
+    "done": "已完成",
+    "skipped": "未执行",
+    "partial": "部分完成",
+    "failed": "失败",
+    "stale": "结果过期",
+    "waiting": "等待人工",
+}
+
+
+def nodes_overview(db_path: Path | str | None = None,
+                   recent: int = 30) -> dict[str, Any]:
+    """登记表驱动的节点总览：**每个已登记的节点都出现，含写作台的访谈节点**。
+
+    旧版的病根：节点清单写死在 `dashboard/api.py` 里，只有 10 个；
+    访谈节点不在其中（所以写作台完全不可见），而且状态是"**有事件就 done**"
+    ——于是研究流程页对绝大多数节点显示"已完成"，包括从未真正执行过的。
+
+    这里改成三件事：
+
+    1. **清单来自登记表**（`writing/node_registry.NODES`），登记了新节点就自动出现；
+    2. **状态语义明确**（`idle`/`running`/`done`/`skipped`/`partial`/`failed`/
+       `stale`），其中"未执行"是诚实的默认值；
+    3. **带上派工单**：谁在给谁下单、进行到哪一步，界面据此显示「当前派工」。
+    """
+    from research_agent.writing import node_registry as reg
+    from research_agent.writing import dispatch as dp
+
+    conn = _open(db_path)
+    try:
+        events = _recent_events(conn, max(100, recent * 20))
+        by_node: dict[str, list[dict[str, Any]]] = {}
+        for ev in events:
+            key = str(ev.get("node") or "")
+            # 作业管理器的记账事件（`library` + `<action>-start/-end`）不是节点的
+            # 业务事件，混进来会让"文献库"显示成"已完成"。
+            if key == "library" and str(ev.get("event") or "").endswith(
+                    ("-start", "-end")):
+                continue
+            by_node.setdefault(key, []).append(ev)
+            if key == "quality" and ev.get("event") == "human-review":
+                by_node.setdefault("human_review", []).append(ev)
+
+        dispatches = dp.list_dispatches(conn, limit=max(1, recent))
+        last_dispatch: dict[str, dict[str, Any]] = {}
+        for run in dispatches:
+            for step in run.get("steps") or []:
+                node = str(step.get("node") or "")
+                if node and node not in last_dispatch:
+                    last_dispatch[node] = {"dispatch_id": run["dispatch_id"],
+                                           "status": step.get("status"),
+                                           "ts": run.get("ended_ts") or run.get("ts"),
+                                           "task": step.get("task"),
+                                           "seconds": step.get("seconds"),
+                                           "skip_reason": step.get("skip_reason", "")}
+
+        nodes: list[dict[str, Any]] = []
+        for spec in reg.NODES:
+            node_events = by_node.get(spec.node, [])
+            counts = _node_counts(conn, spec.node)
+            status, note = _node_status(conn, spec, node_events,
+                                        last_dispatch.get(spec.node),
+                                        dispatches)
+            nodes.append({
+                **spec.as_dict(),
+                "id": spec.node,
+                "status": status,
+                "status_label": NODE_STATUS_LABELS.get(status, status),
+                "status_note": note,
+                "count": counts["count"],
+                "paper_count": counts["paper_count"],
+                "last_ts": (node_events[0]["ts"] if node_events else None),
+                "last_event": (node_events[0]["event"] if node_events else None),
+                "events": node_events[:5],
+                "last_dispatch": last_dispatch.get(spec.node),
+                "has_tasks": bool(spec.tasks),
+            })
+
+        return {
+            "ok": True,
+            "nodes": nodes,
+            "groups": list(dict.fromkeys(spec.group for spec in reg.NODES)),
+            "status_labels": NODE_STATUS_LABELS,
+            "dispatches": dispatches,
+            "recent": events[:recent],
+            "llm_nodes": list(reg.LLM_NODES),
+        }
+    finally:
+        conn.close()
+
+
+def _node_counts(conn: sqlite3.Connection,
+                 node: str) -> dict[str, int]:
+    """该节点的历史事件数与涉及文献数（无表时返回 0，不抛）。"""
+    if not _table(conn, "processing_log"):
+        return {"count": 0, "paper_count": 0}
+    try:
+        row = conn.execute(
+            "SELECT COUNT(*) AS c, COUNT(DISTINCT paper_key) AS pc "
+            "FROM processing_log WHERE node=?", (node,)).fetchone()
+    except sqlite3.Error:
+        return {"count": 0, "paper_count": 0}
+    return {"count": int(row["c"] or 0), "paper_count": int(row["pc"] or 0)}
+
+
+def _node_status(conn: sqlite3.Connection, spec: Any,
+                 events: list[dict[str, Any]],
+                 dispatch: dict[str, Any] | None,
+                 dispatches: list[dict[str, Any]] | None = None
+                 ) -> tuple[str, str]:
+    """推节点状态与一句"为什么"。返回 ``(status, note)``。
+
+    判断顺序刻意从"最近发生的具体事实"到"历史痕迹"：
+
+    1. 有在跑的派工 → ``running``；
+    2. 最近一次派工失败 → ``failed``；被跳过 → ``skipped``（未执行）；
+    3. 最近事件说 running/error → 对应状态；
+    4. 有派工完成、但事件早于派工 → ``done``；
+    5. 人工审核节点有历史 → ``waiting``；
+    6. 其余一律 ``idle``（**这才是诚实的默认值**）。
+    """
+    runs = dispatches if dispatches is not None else _dispatches_for(
+        conn, spec.node)
+    active = [run for run in runs
+              if run.get("status") == "running"
+              and any(str(st.get("node") or "") == spec.node
+                      for st in (run.get("steps") or []))]
+    if active:
+        return "running", f"派工 {active[0]['dispatch_id']} 执行中"
+    if dispatch:
+        status = str(dispatch.get("status") or "")
+        if status == "failed":
+            return "failed", f"派工失败：{dispatch.get('task') or ''}"
+        if status == "skipped":
+            reason = dispatch.get("skip_reason") or "条件不满足，未执行"
+            return "skipped", f"跳过：{reason}"
+        if status == "cancelled":
+            return "skipped", "派工已取消"
+    if events:
+        det = events[0].get("details") or {}
+        raw = str(det.get("status") or "")
+        name = str(events[0].get("event") or "")
+        if raw == "running":
+            return "running", f"最近事件 {name} 正在进行"
+        if raw in ("error", "failed") or name.endswith(("-failed", "-error")):
+            return "failed", str(det.get("error") or f"最近一次 {name} 失败")[:120]
+        if det.get("decision") == "human" or spec.node == "human_review":
+            return "waiting", "有文献等待人工审核"
+    if dispatch and dispatch.get("status") == "done":
+        return "done", f"派工完成：{dispatch.get('task') or ''}"
+    if events:
+        if spec.node == "human_review":
+            return "waiting", "有文献等待人工审核"
+        return "done", f"最近事件 {events[0].get('event')}（{events[0].get('ts')}）"
+    if spec.node == "interview":
+        return "idle", "写作台访谈尚未开始"
+    return "idle", "未执行（尚无任何记录）"
+
+
+def _dispatches_for(conn: sqlite3.Connection, node: str) -> list[dict[str, Any]]:
+    """该节点相关的最近派工（含 running，用于"正在执行"判断）。"""
+    if not _table(conn, "dispatch_runs"):
+        return []
+    from research_agent.writing.dispatch import list_dispatches
+    return [run for run in list_dispatches(conn, limit=30)
+            if any(str(st.get("node") or "") == node
+                   for st in (run.get("steps") or []))]
+
+
+def _recent_events(conn: sqlite3.Connection,
+                   limit: int) -> list[dict[str, Any]]:
+    if not _table(conn, "processing_log"):
+        return []
+    rows = conn.execute(
+        "SELECT id, paper_key, node, event, details, ts "
+        "FROM processing_log ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
+    out: list[dict[str, Any]] = []
+    for r in rows:
+        d = dict(r)
+        try:
+            d["details"] = json.loads(d.get("details") or "null")
+        except json.JSONDecodeError:
+            d["details"] = None
+        out.append(d)
+    return out
 
 
 def study_status(db_path: Path | str | None = None,

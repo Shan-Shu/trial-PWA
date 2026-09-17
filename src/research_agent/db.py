@@ -111,6 +111,30 @@ CREATE TABLE IF NOT EXISTS study_runs (
 );
 CREATE INDEX IF NOT EXISTS idx_study_runs_ts ON study_runs(ts);
 
+-- ---------------------------------------------------------------- 派工单
+-- 工作规划节点"下单"的记录：一次派工一行，步骤明细存 JSON。
+-- 为什么落库：派工可能耗几分钟（检索+抽取），界面要能刷新后继续看；
+-- 也是幂等（同一 dispatch_id 只执行一次）与"当前派工"看板的数据源。
+CREATE TABLE IF NOT EXISTS dispatch_runs (
+    dispatch_id TEXT PRIMARY KEY,
+    project_id  INTEGER,
+    section_key TEXT,
+    origin      TEXT,
+    reason      TEXT,
+    plan_json   TEXT,
+    steps_json  TEXT,
+    status      TEXT,
+    rounds      INTEGER DEFAULT 0,
+    added       INTEGER DEFAULT 0,
+    error       TEXT,
+    trace       TEXT,
+    ts          TEXT,
+    ended_ts    TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_dispatch_project
+    ON dispatch_runs(project_id, ts);
+CREATE INDEX IF NOT EXISTS idx_dispatch_status ON dispatch_runs(status);
+
 -- ---------------------------------------------------------------- 文献库侧车表
 -- 来源：paper_writing_assistant 的 library/store.py，合并时补齐了
 -- FOREIGN KEY + ON DELETE CASCADE（来源版本无外键，绕过主流程即留孤儿行），

@@ -20,11 +20,12 @@ from fastapi.staticfiles import StaticFiles
 from research_agent import __version__
 from research_agent.config import Settings
 from research_agent.config import settings as default_settings
+from research_agent.db import connect
 from research_agent.dashboard import api as dbapi
 from research_agent.dashboard import library_api as libapi
 from research_agent.dashboard import writing_api as wrtapi
 from research_agent.dashboard import section_api as secapi
-from research_agent.logging import log_event, new_trace, trace_var
+from research_agent.logging import current_trace, log_event, new_trace, trace_var
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 
@@ -137,6 +138,87 @@ def create_app(db_path: str | Path | None = None,
     @app.get("/api/status/nodes")
     def status_nodes(request: Request = None) -> dict:
         return dbapi.node_status(request.app.state.db_path)
+
+    # ------------------------------------------ 派工（规划节点下单）
+    @app.get("/api/registry/nodes")
+    def registry_nodes(group: str = "") -> dict:
+        """登记表：哪些节点能被派工、每个任务要什么参数、产出什么。"""
+        from research_agent.writing import node_registry as reg
+        return {"ok": True,
+                "nodes": reg.list_nodes(group=group or ""),
+                "tasks": reg.list_tasks(),
+                "llm_nodes": list(reg.LLM_NODES),
+                "dispatchable": list(reg.DISPATCHABLE_NODES)}
+
+    @app.get("/api/dispatches")
+    def dispatches(request: Request, project_id: int = 0,
+                   section_key: str = "", limit: int = 20) -> dict:
+        """最近的派工单——界面上的「当前派工」看板。"""
+        from research_agent.writing import dispatch as dp
+        conn = connect(request.app.state.db_path)
+        try:
+            return {"ok": True, "dispatches": dp.list_dispatches(
+                conn, project_id=project_id, section_key=section_key,
+                limit=limit)}
+        finally:
+            conn.close()
+
+    @app.get("/api/dispatches/{dispatch_id}")
+    def dispatch_detail(dispatch_id: str, request: Request) -> dict:
+        from research_agent.writing import dispatch as dp
+        conn = connect(request.app.state.db_path)
+        try:
+            item = dp.get_dispatch(conn, dispatch_id)
+            if not item:
+                return {"ok": False, "error": f"派工单不存在: {dispatch_id}"}
+            return {"ok": True, "dispatch": item}
+        finally:
+            conn.close()
+
+    @app.post("/api/dispatches")
+    def create_dispatch(request: Request, payload: dict = Body(...)) -> dict:
+        """下一张派工单，**同步执行**后返回结果。
+
+        三种来源共用这一条执行链（`origin` 标明）：
+        缺口决定 / 自定义任务 / 用户直接对某个节点下指令。
+
+        为什么是同步：派工单通常只有 1~3 步、几十秒内结束，同步返回能让调用方
+        （以及离线回归）直接拿到逐步回报；真正耗时的检索链本来就走作业管理器。
+        """
+        from research_agent.db import connect
+        from research_agent.writing import dispatch as dp
+        from research_agent.writing import node_registry as reg
+
+        plan = payload.get("plan")
+        if not isinstance(plan, list) or not plan:
+            tasks = payload.get("tasks")
+            if not isinstance(tasks, list) or not tasks:
+                return {"ok": False, "error": "plan 或 tasks 至少给一个"}
+            plan = []
+            for name in tasks:
+                found = reg.get_task(str(name))
+                plan.append({"task": str(name),
+                             "node": found[0].node if found else ""})
+        unknown = [str(st.get("task")) for st in plan
+                   if not reg.get_task(str(st.get("task") or ""))]
+        if unknown:
+            return {"ok": False, "error": f"未登记的任务: {', '.join(unknown)}"}
+
+        dispatch_id = dp.new_dispatch_id()
+        conn = connect(request.app.state.db_path)
+        try:
+            record = dp.run_dispatch(
+                plan=plan, conn=conn, dispatch_id=dispatch_id,
+                project_id=int(payload.get("project_id") or 0),
+                section_key=str(payload.get("section_key") or ""),
+                origin=str(payload.get("origin") or "user_direct"),
+                reason=str(payload.get("reason") or ""),
+                budget=payload.get("budget") or {},
+                settings=request.app.state.settings,
+                trace=str(payload.get("trace") or "") or current_trace())
+        finally:
+            conn.close()
+        return {"ok": True, "dispatch_id": dispatch_id, "dispatch": record}
 
     @app.get("/api/reviews")
     def reviews(request: Request = None,

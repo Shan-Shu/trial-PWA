@@ -134,25 +134,165 @@ def _retrieve_entry(**kwargs: Any) -> dict[str, Any]:
 
 
 def _assess_quality_entry(**kwargs: Any) -> dict[str, Any]:
+    """质量评估（LLM 角色 quality）：复用质量控制节点的构造器，逐篇评估并落库。
+
+    这里**真的评估**——早期版本只数了一下已有结果就返回，看着"执行成功"
+    其实什么也没做（派工形同虚设）。
+    """
     from research_agent.db import connect
     from research_agent.config import settings as default_settings
+    from research_agent.quality.node import make_quality_node
 
     keys = [str(k) for k in (kwargs.get("paper_keys") or [])]
     if not keys:
         return {"assessed": 0, "skipped": True,
                 "skip_reason": "未提供 paper_keys"}
-    conn = connect(kwargs.get("db_path") or default_settings.db_path)
+    settings = kwargs.get("settings") or default_settings
+    conn = kwargs.get("conn") or connect(kwargs.get("db_path")
+                                         or settings.db_path)
+    own_conn = kwargs.get("conn") is None
     try:
-        done = 0
-        for key in keys:
-            row = conn.execute(
-                "SELECT 1 FROM quality_results WHERE paper_key=?", (key,)).fetchone()
-            if row:
-                done += 1
-        return {"assessed": done, "requested": len(keys),
-                "note": "既有质量结果已存在，未重复评分"}
+        node = make_quality_node(kwargs.get("api"), kwargs.get("model"),
+                                 conn=conn, settings=settings)
+        decisions: dict[str, int] = {}
+        failed: list[dict[str, str]] = []
+        for key in keys[:kwargs.get("limit") or 50]:
+            try:
+                out = node({"current_key": key, "meta_attempts": 0}) or {}
+            except Exception as exc:  # noqa: BLE001 —— 单篇失败不影响其余
+                failed.append({"paper_key": key, "error": str(exc)[:200]})
+                continue
+            decision = str(out.get("decision") or out.get("status") or "")
+            if decision:
+                decisions[decision] = decisions.get(decision, 0) + 1
+        return {"assessed": sum(decisions.values()), "requested": len(keys),
+                "decisions": decisions, "failed": failed[:10]}
     finally:
-        conn.close()
+        if own_conn:
+            conn.close()
+
+
+def _enrich_metadata_entry(**kwargs: Any) -> dict[str, Any]:
+    """元数据回补（无模型）：复用检索节点的 ``enrich_existing_paper``。"""
+    from research_agent.db import connect
+    from research_agent.config import settings as default_settings
+    from research_agent.retrieval.api_clients import ApiHub
+    from research_agent.retrieval.node import enrich_existing_paper
+
+    keys = [str(k) for k in (kwargs.get("paper_keys") or [])]
+    if not keys:
+        return {"enriched": 0, "skipped": True,
+                "skip_reason": "未提供 paper_keys"}
+    settings = kwargs.get("settings") or default_settings
+    conn = kwargs.get("conn") or connect(kwargs.get("db_path")
+                                         or settings.db_path)
+    own_conn = kwargs.get("conn") is None
+    try:
+        api = kwargs.get("api") or ApiHub()
+        changed = 0
+        failed: list[dict[str, str]] = []
+        for key in keys[:kwargs.get("limit") or 20]:
+            try:
+                out = enrich_existing_paper(key, api=api,
+                                            model=kwargs.get("model"),
+                                            conn=conn, settings=settings) or {}
+            except Exception as exc:  # noqa: BLE001
+                failed.append({"paper_key": key, "error": str(exc)[:200]})
+                continue
+            if out.get("changed"):
+                changed += 1
+        return {"enriched": changed, "requested": len(keys),
+                "failed": failed[:10]}
+    finally:
+        if own_conn:
+            conn.close()
+
+
+def _plan_entry(**kwargs: Any) -> dict[str, Any]:
+    """生成任务单（LLM 角色 planner）：复用整篇工作规划入口。"""
+    from research_agent.db import connect
+    from research_agent.config import settings as default_settings
+    from research_agent.writing.section_service import build_project_plan
+
+    project_id = int(kwargs.get("project_id") or 0)
+    if not project_id:
+        return {"skipped": True, "skip_reason": "未提供 project_id"}
+    settings = kwargs.get("settings") or default_settings
+    conn = kwargs.get("conn") or connect(kwargs.get("db_path")
+                                         or settings.db_path)
+    own_conn = kwargs.get("conn") is None
+    try:
+        result = build_project_plan(
+            conn, project_id=project_id,
+            topic=str(kwargs.get("topic") or ""),
+            instruction=str(kwargs.get("request") or kwargs.get("instruction")
+                            or ""),
+            settings=settings, planner_model=kwargs.get("model"),
+            persist=bool(kwargs.get("persist", True))) or {}
+        plan = result.get("plan") or {}
+        return {"mode": result.get("mode") or "",
+                "sections": len(plan.get("sections") or []) or len(
+                    result.get("sections") or []),
+                "plan": plan}
+    finally:
+        if own_conn:
+            conn.close()
+
+
+def _library_maintain_entry(**kwargs: Any) -> dict[str, Any]:
+    """文献库维护（无模型）：标签 / 收藏 / 文件夹等既有操作。"""
+    from research_agent.db import connect
+    from research_agent.config import settings as default_settings
+    from research_agent.library import store as libstore
+
+    action = str(kwargs.get("action") or "").strip()
+    if not action:
+        return {"changed": 0, "skipped": True, "skip_reason": "未提供 action"}
+    handler = getattr(libstore, f"set_{action}", None) or getattr(
+        libstore, action, None)
+    if not callable(handler):
+        return {"changed": 0, "skipped": True,
+                "skip_reason": f"文献库不支持的动作: {action}"}
+    settings = kwargs.get("settings") or default_settings
+    conn = kwargs.get("conn") or connect(kwargs.get("db_path")
+                                         or settings.db_path)
+    own_conn = kwargs.get("conn") is None
+    try:
+        keys = [str(k) for k in (kwargs.get("paper_keys") or [])]
+        payload = kwargs.get("payload")
+        try:
+            out = handler(conn, keys, payload) if payload is not None else \
+                handler(conn, keys)
+        except TypeError:
+            out = handler(conn, *keys)
+        return {"changed": len(keys), "action": action,
+                "result": out if isinstance(out, dict) else {"ok": bool(out)}}
+    finally:
+        if own_conn:
+            conn.close()
+
+
+def _export_entry(**kwargs: Any) -> dict[str, Any]:
+    """导出（无模型）：复用写作台的整篇导出。"""
+    from research_agent.db import connect
+    from research_agent.config import settings as default_settings
+    from research_agent.writing.service import export_project_markdown
+
+    project_id = int(kwargs.get("project_id") or 0)
+    if not project_id:
+        return {"skipped": True, "skip_reason": "未提供 project_id"}
+    settings = kwargs.get("settings") or default_settings
+    conn = kwargs.get("conn") or connect(kwargs.get("db_path")
+                                         or settings.db_path)
+    own_conn = kwargs.get("conn") is None
+    try:
+        out = export_project_markdown(conn, project_id) or {}
+        return {"filename": out.get("filename") or "",
+                "chars": len(out.get("content") or ""),
+                "content": out.get("content") or ""}
+    finally:
+        if own_conn:
+            conn.close()
 
 
 def _extract_entry(**kwargs: Any) -> dict[str, Any]:
@@ -301,7 +441,8 @@ NODES: tuple[NodeSpec, ...] = (
                 timeout_seconds=900,
             ),
             TaskSpec(
-                task="enrich_metadata", label="元数据回补", entry=None,
+                task="enrich_metadata", label="元数据回补",
+                entry=_enrich_metadata_entry,
                 accepts=("paper_keys",), produces=("enriched",),
                 cost="network", typical_seconds=(2, 10), per_item=True,
                 needs_model=False, model_missing_behavior="unavailable",
@@ -350,7 +491,7 @@ NODES: tuple[NodeSpec, ...] = (
         auto_dispatch=False,          # 它是发令方，不接受派工
         tasks=(
             TaskSpec(
-                task="plan", label="生成任务单", entry=None,
+                task="plan", label="生成任务单", entry=_plan_entry,
                 accepts=("request",), produces=("plan",),
                 cost="llm", typical_seconds=(5, 30),
                 needs_model=True, model_missing_behavior="fallback",
@@ -451,7 +592,8 @@ NODES: tuple[NodeSpec, ...] = (
         auto_dispatch=False,
         tasks=(
             TaskSpec(
-                task="library_maintain", label="文献库维护", entry=None,
+                task="library_maintain", label="文献库维护",
+                entry=_library_maintain_entry,
                 accepts=("action", "paper_keys", "payload"),
                 produces=("changed",),
                 cost="db", typical_seconds=(1, 3),
@@ -459,7 +601,7 @@ NODES: tuple[NodeSpec, ...] = (
                 timeout_seconds=120,
             ),
             TaskSpec(
-                task="export", label="导出", entry=None,
+                task="export", label="导出", entry=_export_entry,
                 accepts=("paper_keys", "style"), produces=("content", "filename"),
                 cost="compute", typical_seconds=(1, 3),
                 needs_model=False, model_missing_behavior="unavailable",

@@ -250,7 +250,49 @@ async function main() {
           traceText.slice(0, 80).replace(/\n/g, " "));
     await shot("10-trace-drawer");
 
-    // ---------------- ⑥ 浏览器侧错误 ----------------
+    // ---------------- ⑥ 研究流程页（登记表驱动 + 派工板） ----------------
+    // 这一页以前对几乎每个节点都显示"已完成"（有事件就算完成），
+    // 而且写作台的访谈节点根本不在清单里。这里守住三条：
+    //   1. 节点清单来自登记表，访谈节点必须在；
+    //   2. 状态语义里有诚实的「未执行」；
+    //   3. 派工单在我们刚跑过访谈后必须出现。
+    await page.goto(`${base}/#experiment`, { waitUntil: "domcontentloaded", timeout: 30000 });
+    await page.waitForSelector("[data-node]", { timeout: 30000 });
+    await page.waitForTimeout(600);
+    const nodeIds = await page.$$eval("[data-node]",
+      (els) => els.map((el) => el.getAttribute("data-node")));
+    check(nodeIds.includes("interview"), "研究流程页含写作台访谈节点", `${nodeIds.length} 个节点`);
+    check(nodeIds.includes("content_builder") && nodeIds.includes("fact_checker"),
+          "研究流程页含内容形成与事实核查节点");
+    const pageText = await page.locator("#pageHost").innerText();
+    check(/未执行/.test(pageText), "状态里有诚实的「未执行」",
+          (pageText.match(/未执行/g) || []).length + " 处");
+    check(/当前派工/.test(pageText), "有「当前派工」看板");
+    check(/已完成|执行中|未执行/.test(pageText), "节点状态使用明确语义");
+    await shot("11-experiment-nodes");
+
+    // 分组筛选：点一个分组按钮后节点仍在（验证委托绑定在重渲染后仍生效）
+    const groupBtn = page.locator("[data-group]").nth(1);
+    if (await groupBtn.count()) {
+      await groupBtn.click();
+      await page.waitForTimeout(400);
+      const filtered = await page.$$eval("[data-node]", (els) => els.length);
+      check(filtered >= 1, "分组筛选后仍有节点渲染", `${filtered} 个`);
+      await page.locator("[data-group]").first().click();
+      await page.waitForTimeout(300);
+    }
+
+    // 点一个节点卡片应当打开详情抽屉
+    await page.locator("[data-node='interview']").first().click();
+    const drawerText = await page.waitForFunction(() => {
+      const box = document.querySelector(".drawer, [class*=drawer]");
+      const text = box ? box.innerText.trim() : "";
+      return text.length > 20 ? text : null;
+    }, { timeout: 15000 }).then((h) => h.jsonValue()).catch(() => "");
+    check(drawerText.length > 20, "点节点卡片能打开详情", drawerText.slice(0, 60).replace(/\n/g, " "));
+    await shot("12-experiment-drawer");
+
+    // ---------------- ⑦ 浏览器侧错误 ----------------
     check(pageErrors.length === 0, "无未捕获的页面异常", pageErrors.slice(0, 3).join(" | "));
     check(failedResponses.length === 0, "无 4xx/5xx 资源请求",
           failedResponses.slice(0, 5).join(" | "));
