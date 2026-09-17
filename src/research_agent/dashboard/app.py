@@ -462,6 +462,38 @@ def create_app(db_path: str | Path | None = None,
         return secapi.section_templates(
             request.app.state.db_path, genre or None)
 
+    # ------------------------------------------ 访谈（唯一的交互节点）
+    @app.post("/api/writing/projects/{project_id}/interview/start")
+    def interview_start(project_id: int, request: Request,
+                        payload: dict | None = Body(default=None)) -> dict:
+        payload = payload or {}
+        return secapi.interview_start(
+            request.app.state.db_path, project_id,
+            reset=bool(payload.get("reset", False)),
+            genre=str(payload.get("genre") or ""),
+            topic=str(payload.get("topic") or ""),
+            sections_list=payload.get("sections"))
+
+    @app.get("/api/writing/projects/{project_id}/interview")
+    def interview_get(project_id: int, request: Request) -> dict:
+        return secapi.interview_snapshot(
+            request.app.state.db_path, project_id)
+
+    @app.post("/api/writing/projects/{project_id}/interview/answer")
+    def interview_answer(project_id: int, request: Request,
+                         payload: dict = Body(...)) -> dict:
+        return secapi.interview_answer(
+            request.app.state.db_path, project_id, payload)
+
+    @app.post("/api/writing/projects/{project_id}/interview/step")
+    def interview_step(project_id: int, request: Request,
+                       payload: dict | None = Body(default=None)) -> dict:
+        payload = payload or {}
+        return secapi.interview_step(
+            request.app.state.db_path, project_id,
+            settings=request.app.state.settings,
+            use_model=bool(payload.get("use_model", True)))
+
     @app.post("/api/writing/projects/{project_id}/sections/{section_key}/plan")
     def section_plan(project_id: int, section_key: str, request: Request,
                      payload: dict | None = Body(default=None)) -> dict:

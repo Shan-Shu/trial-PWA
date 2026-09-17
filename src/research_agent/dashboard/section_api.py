@@ -31,6 +31,10 @@ __all__ = [
     "section_trace",
     "section_states",
     "section_content",
+    "interview_start",
+    "interview_snapshot",
+    "interview_answer",
+    "interview_step",
 ]
 
 
@@ -220,5 +224,89 @@ def section_states(db_path: str | Path | None,
     try:
         return {"ok": True, "project_id": int(project_id),
                 "states": sections.latest_section_state(conn, project_id)}
+    finally:
+        conn.close()
+
+
+# ------------------------------------------------- 访谈（唯一的交互节点）
+
+def interview_start(db_path: str | Path | None, project_id: int,
+                    reset: bool = False, genre: str = "", topic: str = "",
+                    sections_list: list[str] | None = None) -> dict[str, Any]:
+    """开始 / 恢复访谈（工作规划节点的唯一入口）。"""
+    from research_agent.writing import interview as iv
+    conn = _open(db_path)
+    try:
+        iv.start_interview(conn, int(project_id), genre=genre, topic=topic,
+                           sections=sections_list, reset=reset)
+        return iv.snapshot(conn, int(project_id))
+    except ValueError as exc:
+        return {"ok": False, "error": str(exc)}
+    finally:
+        conn.close()
+
+
+def interview_snapshot(db_path: str | Path | None,
+                       project_id: int) -> dict[str, Any]:
+    from research_agent.writing import interview as iv
+    conn = _open(db_path)
+    try:
+        return iv.snapshot(conn, int(project_id))
+    finally:
+        conn.close()
+
+
+def interview_answer(db_path: str | Path | None, project_id: int,
+                     payload: dict[str, Any]) -> dict[str, Any]:
+    """记录一次作答，返回推进后的快照。
+
+    本函数只做**纯状态推进**，不做耗时操作；快照里的 ``next_action`` 非空时，
+    界面应调 ``interview_step`` 起作业并轮询。
+    """
+    from research_agent.writing import interview as iv
+    conn = _open(db_path)
+    try:
+        iv.answer(conn, int(project_id), payload or {})
+        return iv.snapshot(conn, int(project_id))
+    except ValueError as exc:
+        return {"ok": False, "error": str(exc)}
+    finally:
+        conn.close()
+
+
+def interview_step(db_path: str | Path | None, project_id: int,
+                   settings: Any = None,
+                   use_model: bool = True) -> dict[str, Any]:
+    """推进访谈一步（拟方案 / 判定 / 协作 / 写作），返回 ``job_id``。
+
+    一步只做一件事，界面可以短轮询；作业机制复用既有管理器
+    （超时、取消、进度都是现成的）。
+    """
+    from research_agent.writing import interview as iv
+    from research_agent.writing import interview_loop
+    conn = _open(db_path)
+    try:
+        state = iv.load_state(conn, int(project_id))
+        action = interview_loop.next_action(state)
+        if not action:
+            return {"ok": True, "job_id": "", "action": "",
+                    "snapshot": iv.snapshot(conn, int(project_id))}
+        planner_model = gap_model = compose_model = None
+        reason = ""
+        if use_model:
+            from research_agent.writing.service import default_model
+            gp_model, reason = default_model()
+            planner_model = gp_model
+            gap_model = gp_model
+            compose_model = gp_model
+        job_id = sections.start_interview_step(
+            project_id=int(project_id),
+            db_path=str(db_path) if db_path else None,
+            settings=settings, planner_model=planner_model,
+            gap_model=gap_model, compose_model=compose_model,
+            compose_model_reason=reason, use_model=use_model)
+        return {"ok": True, "job_id": job_id, "action": action}
+    except ValueError as exc:
+        return {"ok": False, "error": str(exc)}
     finally:
         conn.close()

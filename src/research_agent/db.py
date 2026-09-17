@@ -156,6 +156,7 @@ CREATE TABLE IF NOT EXISTS writing_projects (
     language     TEXT DEFAULT 'zh',
     outline_json TEXT DEFAULT '[]',
     plan_json    TEXT DEFAULT '{}',   -- 工作规划（唯一规划节点的产物）
+    interview_json TEXT DEFAULT '{}', -- 访谈状态（逐部分闭环进度）
     status       TEXT DEFAULT 'draft',
     created_at   TEXT NOT NULL,
     updated_at   TEXT
@@ -247,6 +248,10 @@ def connect(db_path: Path | str | None = None) -> sqlite3.Connection:
         if "plan_json" not in project_cols:
             conn.execute(
                 "ALTER TABLE writing_projects ADD COLUMN plan_json TEXT DEFAULT '{}'")
+        # 访谈状态：写作台唯一的交互节点（逐部分闭环的进度）
+        if "interview_json" not in project_cols:
+            conn.execute(
+                "ALTER TABLE writing_projects ADD COLUMN interview_json TEXT DEFAULT '{}'")
     # section_runs：模板化后要记录用了哪个模板、字段来源、未满足的必考维度
     if _table_exists(conn, "section_runs"):
         run_cols = {r["name"] for r in conn.execute(

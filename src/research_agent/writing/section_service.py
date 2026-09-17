@@ -40,6 +40,7 @@ __all__ = [
     "cancel_section_run",
     "plan_section",
     "build_project_plan",
+    "start_interview_step",
     "get_section_trace",
     "latest_section_state",
     "SECTION_TERMINAL",
@@ -476,6 +477,40 @@ def cancel_section_run(job_id: str, db_path: str | None = None) -> bool:
 
 
 # ------------------------------------------------------------------ 工作规划
+
+def start_interview_step(
+    *,
+    project_id: int,
+    db_path: str | None = None,
+    settings: Settings | None = None,
+    planner_model: Any = None,
+    gap_model: Any = None,
+    compose_model: Any = None,
+    compose_model_reason: str = "",
+    use_model: bool = True,
+) -> str:
+    """起一个"推进访谈一步"的作业，返回 ``job_id``。
+
+    一步只做一件事（拟方案 / 判定 / 协作 / 写作），因此可以短轮询；
+    复用 `LibraryJobManager`，超时、取消、进度都是现成的。
+    """
+    from research_agent.writing.interview_loop import run_step
+
+    manager = ManagerForSections(db_path)
+    return manager.start(
+        "interview-step",
+        run_step,
+        project_id=int(project_id),
+        db_path=db_path,
+        settings=settings,
+        planner_model=planner_model,
+        gap_model=gap_model,
+        compose_model=compose_model,
+        compose_model_reason=compose_model_reason,
+        use_model=use_model,
+        total=1,
+    )
+
 
 def build_project_plan(
     conn: sqlite3.Connection,
