@@ -595,27 +595,45 @@ function renderGapDecision(q) {
   const v = q.verdict || {};
   const unmet = (v.unmet_dimensions || []).map((d) => DIM_LABELS[d] || d);
   const counts = v.counts || {};
-  const opt = (q.options || []).find((o) => o.id === "collect") || {};
-  const rounds = opt.rounds || {};
+  const byId = (id) => (q.options || []).find((o) => o.id === id) || {};
+  const collect = byId("collect");
+  const rounds = collect.rounds || {};
+  const spent = q.rounds_spent || 0;
+  const budgetSpent = Boolean(q.budget_spent) || collect.disabled;
+  // 预算用尽时把「补检」置灰且不默认选中，改默认选「自定义任务」——
+  // 否则用户会一圈圈点补检，每圈都真花检索配额却永远等不到"够了"。
+  const radio = (value, label, extra) => {
+    const off = budgetSpent && value === "collect";
+    const checked = budgetSpent ? value === "custom" : value === "keep_gap";
+    return `
+      <label class="pick-item${off ? " off" : ""}">
+        <input type="radio" name="gap" value="${h(value)}"
+          ${checked ? "checked" : ""} ${off ? "disabled" : ""} />
+        <span>${h(label)}</span>
+        ${extra || ""}</label>`;
+  };
   return `<div class="q-title">「${h(q.heading)}」的支撑不足，怎么办？</div>
     <div class="warnbox" style="margin-top:6px">
       未达标：<b>${h(unmet.join("、") || "—")}</b>
       <div class="muted" style="font-size:11px;margin-top:3px">
         命中文献 ${h(counts.matched_papers ?? 0)} 篇 · 证据 ${h(counts.evidence_ids ?? 0)} 条
+        ${spent ? ` · 已累计补检 ${h(spent)} 轮` : ""}
         ${(q.suggested_queries || []).length
           ? " · 建议检索词：" + h((q.suggested_queries || []).join("、")) : ""}</div>
+      ${budgetSpent ? `<div style="margin-top:5px;font-size:11.5px">
+        <b>补检预算已用尽</b>（累计 ${h(spent)} 轮，上限 ${h(rounds.hard_max ?? 5)}），
+        仍缺 ${h(unmet.join("、") || "—")}。再补检不会再产生可用证据——
+        建议「保留缺口照常撰写」（正文会显式标注缺口），或用「自定义任务」换个口径。</div>` : ""}
     </div>
     <div class="pick-list" style="margin-top:8px">
-      <label class="pick-item"><input type="radio" name="gap" value="keep_gap" checked />
-        <span>保留缺口，照常撰写</span>
-        <span class="muted" style="font-size:10.5px">正文顶部会插入显式缺口标注</span></label>
-      <label class="pick-item"><input type="radio" name="gap" value="collect" />
-        <span>执行检索补全，够了再写</span></label>
-      <label class="pick-item"><input type="radio" name="gap" value="custom" />
-        <span>自定义任务</span>
-        <span class="muted" style="font-size:10.5px">用你自己的话说明要补什么</span></label>
+      ${radio("keep_gap", "保留缺口，照常撰写",
+              `<span class="muted" style="font-size:10.5px">正文顶部会插入显式缺口标注</span>`)}
+      ${radio("collect", "执行检索补全，够了再写",
+              `<span class="muted" style="font-size:10.5px">${h(collect.hint || "")}</span>`)}
+      ${radio("custom", "自定义任务",
+              `<span class="muted" style="font-size:10.5px">用你自己的话说明要补什么${budgetSpent ? "（推荐）" : ""}</span>`)}
     </div>
-    <div class="row tight" style="margin-top:6px">
+    ${budgetSpent ? "" : `<div class="row tight" style="margin-top:6px">
       <span class="muted" style="font-size:11.5px">补检轮数上限：</span>
       <input type="number" id="wrRounds" min="${h(rounds.min ?? 1)}"
         max="${h(rounds.max ?? 5)}" value="${h(rounds.default ?? 2)}"
@@ -623,8 +641,8 @@ function renderGapDecision(q) {
       <label class="muted" style="font-size:11.5px">
         <input type="checkbox" id="wrRoundsAi" /> 让 AI 决定</label>
       <span class="muted" style="font-size:11px">
-        （默认 ${h(rounds.default ?? 2)} 轮，上限 ${h(rounds.max ?? 5)}）</span>
-    </div>
+        （本次最多 ${h(rounds.max ?? 5)} 轮${spent ? `，已累计 ${h(spent)} 轮` : ""}）</span>
+    </div>`}
     <input type="text" id="wrCustomText" placeholder="自定义任务：例如「补 3 篇讲区域选择性的最新文献」"
       style="margin-top:6px" />
     <div class="row tight" style="margin-top:8px">
@@ -803,6 +821,12 @@ function handlePanelClick(el, event) {
   }
   if (el.closest("#wrGapOk")) {
     const decided = root.querySelector('[name="gap"]:checked')?.value || "keep_gap";
+    // 预算用尽时「补检」是禁用的；理论上选不上，但这里再挡一次，
+    // 免得靠界面状态兜底（用户可能用键盘/脚本提交）。
+    if (decided === "collect" && q.budget_spent) {
+      toast("补检预算已用尽，请改选「保留缺口」或「自定义任务」", "warn");
+      return true;
+    }
     const payload = { kind: "gap_decision", section_key: q.section_key,
                       decision: decided };
     if (decided === "collect") {

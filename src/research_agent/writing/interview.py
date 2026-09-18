@@ -177,6 +177,10 @@ class SectionPlanState:
             data.get("collection_rounds") or DEFAULT_COLLECTION_ROUNDS)
         self.rounds_source: str = str(data.get("rounds_source") or "default")
         self.rounds_reason: str = str(data.get("rounds_reason") or "")
+        #: **累计已实际执行的补检轮数**（跨多次"执行检索补全"累加）。
+        #: 必须累计：此前判定只看到"这一轮跑了多少"，于是"补检 → 仍不足 → 再补检"
+        #: 可以无限循环，每一圈都真花检索配额，且预算永远显示没用完。
+        self.rounds_total: int = int(data.get("rounds_total") or 0)
         #: 自定义任务：原始输入 + 解析出的 3 个执行方案
         self.custom_input: str = str(data.get("custom_input") or "")
         self.custom_plans: list[dict[str, Any]] = [
@@ -200,6 +204,7 @@ class SectionPlanState:
             "collection_rounds": self.collection_rounds,
             "rounds_source": self.rounds_source,
             "rounds_reason": self.rounds_reason,
+            "rounds_total": self.rounds_total,
             "custom_input": self.custom_input,
             "custom_plans": list(self.custom_plans),
             "custom_choice": self.custom_choice,
@@ -354,23 +359,45 @@ def current_question(conn: sqlite3.Connection, project_id: int,
     heading = _heading(conn, project_id, key)
 
     if sec.stage in (STAGE_AWAITING_GAP,):
+        spent = int(sec.rounds_total or 0)
+        remaining = max(0, MAX_COLLECTION_ROUNDS - spent)
+        unmet = (sec.verdict or {}).get("unmet_dimensions") or []
+        budget_spent = spent >= MAX_COLLECTION_ROUNDS
+        # 预算用尽时如实说明并把「补检」降级：否则用户会一圈圈点下去，
+        # 每一圈都真花检索配额，却永远等不到"够了"。
+        collect_hint = ("按下面的检索词补充文献后再复判"
+                        if not spent else
+                        f"已累计补检 {spent} 轮；本次最多还能补 {remaining} 轮")
+        if budget_spent:
+            collect_hint = (f"已累计补检 {spent} 轮（上限 {MAX_COLLECTION_ROUNDS}），"
+                            f"仍缺 {'、'.join(str(x) for x in unmet) or '—'}；"
+                            "再补检不会再产生可用证据，请改选其它两项")
         return {"kind": "gap_decision", "section_key": key, "heading": heading,
                 "verdict": sec.verdict,
+                "rounds_spent": spent,
+                "rounds_remaining": remaining,
+                "budget_spent": budget_spent,
                 "suggested_queries": (sec.verdict or {}).get("suggested_queries") or [],
                 "options": [
                     {"id": GAP_KEEP, "label": "保留缺口，照常撰写",
-                     "hint": "正文顶部会插入显式缺口标注"},
+                     "hint": "正文顶部会插入显式缺口标注，写作照常进行",
+                     "recommended": budget_spent},
                     {"id": GAP_COLLECT, "label": "执行检索补全，够了再写",
-                     "hint": "按下面的检索词补充文献后再复判",
+                     "hint": collect_hint,
+                     "disabled": budget_spent,
                      "suggested_queries": (sec.verdict or {}).get("suggested_queries") or [],
-                     "rounds": {"default": DEFAULT_COLLECTION_ROUNDS,
+                     "rounds": {"default": min(DEFAULT_COLLECTION_ROUNDS,
+                                               max(1, remaining)),
                                 "current": sec.collection_rounds,
                                 "min": MIN_COLLECTION_ROUNDS,
-                                "max": MAX_COLLECTION_ROUNDS,
+                                "max": max(1, remaining),
+                                "hard_max": MAX_COLLECTION_ROUNDS,
+                                "spent": spent,
                                 "source": sec.rounds_source,
                                 "reason": sec.rounds_reason}},
                     {"id": GAP_CUSTOM, "label": "自定义任务",
-                     "hint": "用你自己的话说明要补什么，我来解析成可执行方案"},
+                     "hint": "用你自己的话说明要补什么，我来解析成可执行方案",
+                     "recommended": budget_spent},
                 ]}
 
     if sec.stage == STAGE_AWAITING_CUSTOM:
@@ -595,6 +622,14 @@ def _answer_gap(conn: sqlite3.Connection, project_id: int,
 
     rounds = payload.get("rounds")
     if decision == GAP_COLLECT:
+        # **预算闸门**：累计轮数已达硬上限时不再接单。此前这里不看累计值，
+        # 于是"补检 → 仍不足 → 再补检"可以无限循环，每圈都真花检索配额。
+        spent = int(sec.rounds_total or 0)
+        if spent >= MAX_COLLECTION_ROUNDS:
+            raise ValueError(
+                f"「{key}」已累计补检 {spent} 轮（上限 {MAX_COLLECTION_ROUNDS}），"
+                "再补检不会产生新的可用证据。请选择「保留缺口照常撰写」"
+                "或「自定义任务」。")
         if rounds == "ai":
             sec.rounds_source = "ai"
             # 具体值由 gap_planner 决定（阶段 3）；此处先置默认，稍后覆盖
@@ -605,14 +640,15 @@ def _answer_gap(conn: sqlite3.Connection, project_id: int,
             except (TypeError, ValueError):
                 raise ValueError(f"轮数必须是整数或 'ai'：{rounds!r}")
             value = max(MIN_COLLECTION_ROUNDS,
-                        min(MAX_COLLECTION_ROUNDS, value))
-            sec.collection_rounds = value
+                        min(MAX_COLLECTION_ROUNDS - spent, value))
+            sec.collection_rounds = max(1, value)
             sec.rounds_source = "user"
         else:
             sec.collection_rounds = DEFAULT_COLLECTION_ROUNDS
             sec.rounds_source = "default"
         sec.stage = STAGE_COLLABORATING
-        state.say("user", f"{key}：执行检索补全（上限 {sec.collection_rounds} 轮）")
+        state.say("user", f"{key}：执行检索补全（本次上限 "
+                          f"{sec.collection_rounds} 轮，已累计 {spent} 轮）")
     elif decision == GAP_CUSTOM:
         sec.custom_input = str(payload.get("text") or "").strip()
         if not sec.custom_input:

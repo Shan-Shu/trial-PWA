@@ -249,7 +249,11 @@ def _do_judge(db: sqlite3.Connection, project_id: int,
     verdict = judge_section(
         db, plan=plan, section_key=key, genre=genre, heading=heading,
         instruction=sec.resolved_focus or sec.custom_text,
-        focus=focus, rounds_done=int(sec.collaboration.get("rounds_done") or 0),
+        focus=focus,
+        # 传**累计**轮数：判定才知道预算是真的用完了还是刚开始。
+        # 用单次报告的轮数会让"补检 → 仍不足 → 再补检"无限循环。
+        rounds_done=int(sec.rounds_total
+                        or sec.collaboration.get("rounds_done") or 0),
         settings=settings)
     sec.verdict = verdict
     decision = str(verdict.get("decision") or "")
@@ -283,13 +287,17 @@ def _do_collaborate(db: sqlite3.Connection, project_id: int,
     from research_agent.writing.collaboration import run_collaboration
 
     _progress(progress_cb, 20.0, f"正在为「{heading}」补齐支撑…")
+    before = int(sec.rounds_total or 0)
     report = run_collaboration(
         db, project_id=project_id, section_key=key,
         section_state=sec, project=project, settings=settings,
         progress_cb=progress_cb)
     sec.collaboration = report
+    # 累计实际轮数：判定据此判断预算是否真的用尽（见 `_do_judge`）
+    sec.rounds_total = before + int(report.get("rounds_done") or 0)
     sec.stage = iv.STAGE_JUDGING      # 补齐 → 复判
-    state.say("ai", "协作完成：" + str(report.get("summary") or "—"))
+    state.say("ai", "协作完成：" + str(report.get("summary") or "—")
+              + f"（累计补检 {sec.rounds_total} 轮）")
     _progress(progress_cb, 90.0, "补齐完成，正在复判…")
 
 
