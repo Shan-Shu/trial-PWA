@@ -82,10 +82,45 @@ class LoggedModel:
 
     def __init__(self, model: Any, role: str = "", node: str = "",
                  db: Any = None) -> None:
+        # 直接构造时也要防嵌套：把内层代理剥掉，一次调用只留一条记录。
+        # 首选入口是 :meth:`wrap`（语义更明确），但漏用构造器也不该重复记账。
+        if isinstance(model, LoggedModel):
+            self._model = model._model
+            self._role = role or model._role
+            self._node = node or model._node
+            self._db = db if db is not None else model._db
+            return
         self._model = model
         self._role = role
         self._node = node
         self._db = db
+
+    @staticmethod
+    def wrap(model: Any, role: str = "", node: str = "",
+             db: Any = None) -> Any:
+        """包一层代理；**已经代理过就原样返回**。
+
+        重复包装会让一次模型调用记成两三条 ``llm.call.*``（实测出现过），
+        耗时看着像调了多次，排查时会被彻底带偏——所以这里是唯一的包装入口。
+        需要改用角色/节点名时先 :meth:`unwrap`。
+        """
+        if isinstance(model, LoggedModel):
+            existing = model
+            if not role and not node:
+                return existing
+            # 用同一条记录、新的标签重建一个薄壳（不叠加记录）
+            clone = LoggedModel.__new__(LoggedModel)
+            clone._model = existing._model
+            clone._role = role or existing._role
+            clone._node = node or existing._node
+            clone._db = db if db is not None else existing._db
+            return clone
+        return LoggedModel(model, role=role, node=node, db=db)
+
+    @staticmethod
+    def unwrap(model: Any) -> Any:
+        """剥掉代理（测试与"想换标签"的场合用）。"""
+        return model._model if isinstance(model, LoggedModel) else model
 
     # -------------------------------------------------------- 透明属性
     def __getattr__(self, name: str) -> Any:

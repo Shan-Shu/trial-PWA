@@ -194,7 +194,7 @@ def build_role_model(
     # 透明日志代理：所有 invoke 自动落统一事件日志（谁在调、多慢、多大），
     # 调用点无需任何改动；管理链条的操作透传，对 LangGraph 透明。
     from research_agent.logging.proxy import LoggedModel
-    return LoggedModel(built, role=role)
+    return LoggedModel.wrap(built, role=role)
 
 
 def role_model_binding(role: str) -> dict[str, str]:

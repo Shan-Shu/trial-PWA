@@ -312,7 +312,8 @@ def parse_dispatch_request(*, request: str, topic: str = "",
                 unmet="、".join(str(x) for x in
                                (verdict.get("unmet_dimensions") or [])) or "无",
                 registry=registry_text or reg.describe_for_prompt())
-            data = _parse_json(_invoke(_LoggedNode(model), prompt)) or {}
+            data = _parse_json(_invoke(model, prompt, node="planner",
+                                       role="planner")) or {}
             model_intents = [str(x).strip() for x in
                              (data.get("intents") or []) if str(x).strip()]
             if model_intents:
@@ -391,18 +392,6 @@ def parse_dispatch_request(*, request: str, topic: str = "",
         "parsed_by": parsed_by,
         "dropped": dropped,
     }
-
-
-class _LoggedNode:
-    """给解析调用用的角色标记（让日志里 node=planner 而不是推断值）。"""
-
-    def __init__(self, model: Any) -> None:
-        self._model = model
-
-    def invoke(self, messages: Any, *args: Any, **kwargs: Any) -> Any:
-        from research_agent.logging.proxy import LoggedModel
-        return LoggedModel(self._model, role="planner",
-                           node="planner").invoke(messages, *args, **kwargs)
 
 
 def _steps_to_plan(steps: list[dict[str, Any]], queries: list[str],

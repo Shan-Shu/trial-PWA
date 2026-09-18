@@ -315,10 +315,8 @@ def logged_invoke(model: Any, prompt: Any, *, node: str = "", role: str = "",
 
     from research_agent.logging.proxy import LoggedModel, resolve_node
 
-    if isinstance(model, LoggedModel):     # 已代理，避免重复记录
-        return model.invoke([HumanMessage(content=str(prompt))])
-    proxy = LoggedModel(model, role=role or node,
-                        node=resolve_node(role, node, depth=4), db=db)
+    proxy = LoggedModel.wrap(model, role=role or node,
+                             node=resolve_node(role, node, depth=4), db=db)
     return proxy.invoke([HumanMessage(content=str(prompt))])
 
 

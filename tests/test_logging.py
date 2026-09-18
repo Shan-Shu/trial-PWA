@@ -223,6 +223,23 @@ class ProxyTest(LoggingTestBase):
         starts = recent(20, evt="llm.call.start")
         self.assertEqual(len(starts), 1)
 
+    def test_nested_proxy_does_not_double_count(self):
+        """重复包装一个已代理的模型，一次调用仍只能记一条。
+
+        实测出现过三重记账：同一请求落三条 ``llm.call.start``，耗时看着
+        像三次调用，排查时会被彻底带偏。
+        """
+        inner = LoggedModel(FakeModel(), role="planner")
+        outer = LoggedModel(inner, role="content", node="content_builder")
+        outer.invoke("x" * 5)
+        self.assertEqual(len(recent(20, evt="llm.call.start")), 1)
+        self.assertEqual(len(recent(20, evt="llm.call.end")), 1)
+        end = recent(1, evt="llm.call.end")[0]
+        # 显式给出的 role/node 覆盖内层，模型名仍取自真实的那个
+        self.assertEqual(end["data"]["role"], "content")
+        self.assertEqual(end["node"], "content_builder")
+        self.assertEqual(end["data"]["model"], "fake-flash")
+
     def test_logged_invoke_wraps_bare_model(self):
         logged_invoke(FakeModel(), "x" * 7, node="content_builder",
                       role="content")
