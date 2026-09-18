@@ -136,6 +136,26 @@ class RoundBudgetTest(unittest.TestCase):
         state = self._state()
         self.assertEqual(state.section("objective").rounds_total, 0)
 
+    def test_legacy_state_backfills_from_collaboration_report(self):
+        """旧状态没有 `rounds_total`，但 `collaboration.rounds_done` 有值。
+
+        不回填的话，升级前已经补过的轮数会被"忘掉"，用户可以再多补满一轮预算——
+        而这正是要修的循环的入口。
+        """
+        state = self._state()
+        sec = state.section("objective")
+        data = sec.as_dict()
+        data.pop("rounds_total", None)          # 模拟升级前的旧状态
+        data["collaboration"] = {"rounds_done": 3}
+        restored = iv.SectionPlanState("objective", data)
+        self.assertEqual(restored.rounds_total, 3)
+
+    def test_explicit_rounds_total_wins_over_report(self):
+        """字段存在时以它为准（它才是累计值，报告只是当次）。"""
+        data = {"rounds_total": 5, "collaboration": {"rounds_done": 2}}
+        restored = iv.SectionPlanState("objective", data)
+        self.assertEqual(restored.rounds_total, 5)
+
 
 if __name__ == "__main__":
     unittest.main()

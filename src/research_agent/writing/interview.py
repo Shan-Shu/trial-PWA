@@ -180,7 +180,14 @@ class SectionPlanState:
         #: **累计已实际执行的补检轮数**（跨多次"执行检索补全"累加）。
         #: 必须累计：此前判定只看到"这一轮跑了多少"，于是"补检 → 仍不足 → 再补检"
         #: 可以无限循环，每一圈都真花检索配额，且预算永远显示没用完。
-        self.rounds_total: int = int(data.get("rounds_total") or 0)
+        #:
+        #: 兼容旧状态：这个字段是后加的，此前只把当次轮数记在 `collaboration` 里。
+        #: 缺字段时用那份报告回填，否则老项目会"忘记"已经补过几轮。
+        if data.get("rounds_total") is None:
+            self.rounds_total = int(
+                (data.get("collaboration") or {}).get("rounds_done") or 0)
+        else:
+            self.rounds_total = int(data.get("rounds_total") or 0)
         #: 自定义任务：原始输入 + 解析出的 3 个执行方案
         self.custom_input: str = str(data.get("custom_input") or "")
         self.custom_plans: list[dict[str, Any]] = [
