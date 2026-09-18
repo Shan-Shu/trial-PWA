@@ -250,6 +250,23 @@ async function main() {
           traceText.slice(0, 80).replace(/\n/g, " "));
     await shot("10-trace-drawer");
 
+    // 「换项目」：此前它调了一个不存在的 `refresh()`，点了完全没反应——
+    // 浏览器只报 `refresh is not defined`，静态检查与 HTTP 冒烟都看不见。
+    {
+      const errorsBefore = pageErrors.length + consoleErrors.length;
+      await page.click("#wrSwitch");
+      const backToPicker = await page.waitForSelector("[data-project], #wrTitle",
+        { timeout: 15000 }).then(() => true).catch(() => false);
+      check(backToPicker, "「换项目」能回到项目选择视图");
+      check(pageErrors.length + consoleErrors.length === errorsBefore,
+            "「换项目」没有静默抛错",
+            [...pageErrors, ...consoleErrors].slice(-2).join(" | "));
+      // 再点回原项目，继续后面的用例
+      await page.locator("[data-project]").first().click();
+      await page.waitForSelector("#wrDirectText", { timeout: 30000 });
+      await shot("10b-switch-project");
+    }
+
     // ---------------- ⑥ 对节点下指令（自然语言 → 派工方案 → 下单） ----------------
     // 这是方案 v8 里唯一的"直下指令"入口。离线模式下解析走确定性关键词识别，
     // 因此这条回归不依赖模型与网络，却能覆盖"解析→选方案→下单→逐步回报"整链。

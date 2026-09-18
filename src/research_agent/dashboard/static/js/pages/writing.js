@@ -724,17 +724,32 @@ function installGlobalDelegate() {
   });
 }
 
-/** 把被点击元素描述成一行短标识（诊断用，不含敏感内容）。 */
+/** 把被点击元素描述成一行短标识（诊断用，不含敏感内容）。
+ *
+ * 描述**实际被点的那个元素**，而不是一直往上爬到有 id 的祖先——否则
+ * 日志里只剩一个 `div#wrBody`，根本看不出用户点了什么（踩过这个坑）。
+ */
 function describeTarget(el) {
-  const node = el.closest("[data-genre],[data-choice],[data-section]," +
-                          "[id]") || el;
-  const id = node.id ? `#${node.id}` : "";
-  const tag = node.tagName ? node.tagName.toLowerCase() : "?";
-  const attrs = ["data-genre", "data-choice", "data-section", "data-cplan"]
-    .map((name) => (node.getAttribute && node.getAttribute(name)
-      ? `[${name}=${node.getAttribute(name)}]` : ""))
+  const attrs = ["data-genre", "data-choice", "data-section", "data-cplan",
+                 "data-view", "data-trace", "data-dispatch-plan",
+                 "data-dispatch-detail", "data-group", "data-node"]
+    .map((name) => (el.getAttribute && el.getAttribute(name)
+      ? `[${name}=${el.getAttribute(name)}]` : ""))
     .join("");
-  return `${tag}${id}${attrs}`;
+  const own = describeOne(el);
+  if (own.includes("#") || attrs) return own + attrs;
+  // 自己没什么辨识度时，把最近的、有 id 或 class 的祖先也带上
+  const parent = el.parentElement && el.parentElement.closest("[id], [class]");
+  return `${own}${attrs} < ${parent ? describeOne(parent) : "?"}`;
+}
+
+function describeOne(node) {
+  const tag = node.tagName ? node.tagName.toLowerCase() : "?";
+  const id = node.id ? `#${node.id}` : "";
+  const cls = (!id && node.classList && node.classList.length)
+    ? "." + [...node.classList].slice(0, 2).join(".") : "";
+  const text = id || cls ? "" : ` "${String(node.textContent || "").trim().slice(0, 14)}"`;
+  return `${tag}${id}${cls}${text}`;
 }
 
 /** 当前部分的阶段（诊断日志与"同一步反复无进展"的判断都用它）。 */
@@ -817,10 +832,20 @@ function handlePanelClick(el, event) {
     return true;
   }
   if (el.closest("#wrSwitch")) {
+    // 「换项目」＝回到项目选择视图。此前这里调了一个**不存在的** `refresh()`，
+    // 于是按钮点了没反应（浏览器只报 `refresh is not defined`）。
+    // 现在明确走"清空当前项目 → 重新拉列表 → 画选择器"。
     stopPolling();
     current = null;
     snap = null;
-    refresh();
+    (async () => {
+      try {
+        await loadProjects();
+        renderPicker();
+      } catch (err) {
+        toastError(err);
+      }
+    })();
     return true;
   }
   if (el.closest("#wrRestart")) {
