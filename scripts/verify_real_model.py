@@ -6,7 +6,6 @@
 """
 from __future__ import annotations
 
-import os
 import sys
 import tempfile
 import time
@@ -18,9 +17,9 @@ from dotenv import load_dotenv
 
 load_dotenv(Path(__file__).resolve().parents[1] / ".env")
 
-from research_agent.db import connect                      # noqa: E402
-from research_agent.logging import (bind_trace, configure,  # noqa: E402
-                                    log_path, new_trace, read_file)
+from research_agent.db import connect                       # noqa: E402
+from research_agent.logging import (bind_trace, configure,   # noqa: E402
+                                    new_trace, read_file)
 from research_agent.writing import dispatch as dp          # noqa: E402
 from research_agent.writing import dispatch_planner as dpl  # noqa: E402
 from research_agent.writing.service import create_project  # noqa: E402

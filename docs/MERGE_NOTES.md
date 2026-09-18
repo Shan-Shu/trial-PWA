@@ -251,6 +251,8 @@ PWA 的 `TaskManager` 刻意不并入（它有 `st.fragment` 版本依赖、`lis
   static/js/{app.js, common/*, ui/design.js, pages/*}            ES module 前端（9 页）
   scripts/{migrate_from_pwa,smoke_dashboard,seed_dashboard_db}.py
   scripts/verify_section_flow.py                                 在真实服务上核对节点工作流
+  scripts/verify_dispatch_live.py                                在真实服务上核对派工链路
+  scripts/verify_real_model.py                                   真实模型端到端（需 Key，不进单测）
   scripts/frontend_smoke.mjs                                     前端模块加载冒烟
   scripts/check_frontend_routes.py                               前端接口 ↔ 后端路由配对
   scripts/browser_smoke.mjs                                      真实浏览器交互冒烟（Playwright + Edge）
@@ -340,17 +342,19 @@ uv run python scripts/verify_section_flow.py --base http://127.0.0.1:8000
 | `test_writing.py` | 21 | 体裁来自 pack、显式降级标记、引用入库、导出、路由装配 |
 | `test_section_flow.py` | 28 | 节点指令工作流：词元/停用词、五维判定与硬度闸门、预算用尽、补检→复审、逐轮留痕、引文绑定与越界报告、取消、提示词纪律 |
 | `test_section_templates.py` | 30 | **两套模板与工作规划**：模板完整性、维度按部分区分、系统自拟与用户模式、字段来源（user/plan/template）与纯并行优先级、同一库不同结论、带缺口写作与标注幂等、轨迹记录模板 |
-| `test_logging.py` | **26** | **统一日志**：事件词表受控、脱敏与截断、trace 关联、环形缓冲过滤、`LoggedModel` 代理记账与失败现场、`/api/log` 白名单与 trace 透传 |
+| `test_logging.py` | **27** | **统一日志**：事件词表受控、脱敏与截断、trace 关联、环形缓冲过滤、`LoggedModel` 代理记账与失败现场、**嵌套代理不重复记账**、`/api/log` 白名单与 trace 透传 |
 | `test_dispatch.py` | **24** | **派工协议**：登记项全部有实现、幂等（同单号只跑一次、失败可重跑）、取消、`$stepN` 引用串联与不可解析时跳过、进度上报、预算与步数上限、长正文摘要化 |
 | `test_dispatch_planner.py` | **25** | **自然语言派工**：意图识别（中英）、方案随意图分族、只认登记表任务（模型编的任务名被丢弃）、`skip_reason` 语义（用户点名的保留、自动追加的删掉）、项目上下文与 `project_id` 注入、离线不碰网络、结果可直接下单 |
 | `test_frontend_assets.py` | 18 | 资源存在、**相对导入可解析**、注册表一致性、转义策略+自检、PWA 令牌一致、**前端接口与后端路由逐一配对** |
 | `test_migration.py` | 10 | dry-run 不写库、apply 齐全、幂等、状态映射、质量分换算、溯源 |
-| **单元测试合计** | **403** | `OK` |
+| **单元测试合计** | **404** | `OK` |
 | `frontend_smoke.mjs` | 47 | 真实 import 全部模块、调用 `mount()`、校验 9 页契约与注册表 |
 | `check_frontend_routes.py` | 56 处调用 | 前端接口 ↔ 后端 63 条 `/api` 路由逐一配对（错配只会在点击时 404） |
 | `smoke_dashboard.py` | 139 | 真实 HTTP：新端点 + **工作规划/模板/带缺口写作** + 节点工作流全链路 + 静态资源 + **旧端点无回归** |
 | `browser_smoke.mjs` | **36** | **真实浏览器（Playwright + 本机 Edge）**：写作台问答全链路 + 对节点下指令（解析→选方案→下单）+ 研究流程页（访谈节点在清单、诚实的「未执行」、派工板、分组筛选与详情在重渲染后仍可点）+ 无页面异常/无 4xx/无 console.error |
 | `verify_section_flow.py` | 人工核对 | 在**正在运行的库**上跑一遍并打印判定/轨迹/正文，用于肉眼确认界面所见 |
+| `verify_real_model.py` | 人工核对（需 Key） | 真实模型把自然语言解析成派工方案，并打印同 trace 的统一日志。**刻意不进单测**：回归不能依赖外网与 Key |
+| `verify_dispatch_live.py` | 人工核对 | 在**正在运行的服务**上核对派工链路：登记表 → 解析中文指令 → 下单 → 单号可查 → 未登记任务被拒 → 节点总览 |
 
 ---
 
