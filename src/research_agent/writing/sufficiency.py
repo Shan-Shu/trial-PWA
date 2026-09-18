@@ -199,6 +199,47 @@ def _stem(token: str) -> str:
     return word
 
 
+def _has_cjk(text: str) -> bool:
+    """是否含中日韩字符。用于识别"中文要求 vs 英文知识库"这类语言错配。"""
+    return any("\u3400" <= ch <= "\u9fff" or "\uf900" <= ch <= "\ufaff"
+               for ch in str(text or ""))
+
+
+def _library_looks_ascii(conn: sqlite3.Connection) -> bool:
+    """库内知识内容是否以 ASCII（英文）为主。
+
+    取几条本体节点名做样本即可：本项目抓的是英文文献，节点名自然是英文；
+    而写作要点/要求词元往往来自中文模板。两者一比就能判断
+    "LIKE 查不到"到底是**库里缺**还是**我们没法核对**。
+    """
+    try:
+        rows = conn.execute(
+            "SELECT name FROM ontology_nodes "
+            "WHERE COALESCE(name,'') <> '' LIMIT 40").fetchall()
+    except sqlite3.Error:
+        return False
+    if not rows:
+        return False
+    cjk = sum(1 for r in rows if _has_cjk(r["name"]))
+    return cjk * 2 < len(rows)          # 少数派是中文 ⇒ 视为英文库
+
+
+def _requirement_status(conn: sqlite3.Connection, token: str,
+                        library_ascii: bool) -> str:
+    """要求词元的核对状态：``covered`` / ``missing`` / ``unverifiable``。
+
+    ``unverifiable`` 的含义是**我们没法核对**，不是"库里缺这个"：要求词元是中文、
+    而库内知识是英文时，``LIKE '%自变量按溶剂%'`` 必然 0 命中。把它当成"缺失"
+    会造出一个**永远不可能达标**的硬闸门——实测某个中文主题的实验设计节
+    因此被永久卡在 0/10，无论检索多少轮、抽取多少篇都不会变。
+    """
+    if _requirement_is_covered(conn, token):
+        return "covered"
+    if library_ascii and _has_cjk(token):
+        return "unverifiable"
+    return "missing"
+
+
 def _requirement_is_covered(conn: sqlite3.Connection, token: str) -> bool:
     """该需求词元是否在知识库里出现过（节点/边/超边/成员/条件/测量/证据/事件）。"""
     like = f"%{token}%"
@@ -404,12 +445,25 @@ def evaluate_sufficiency(
     requirements = [t for t in requirement_tokens if len(t) >= 2][:10]
     covered: list[str] = []
     missing: list[str] = []
+    unverifiable: list[str] = []
+    check_unverifiable = bool(getattr(
+        s, "section_requirement_unverifiable_ok", True))
+    library_ascii = _library_looks_ascii(conn) if check_unverifiable else False
     for token in requirements:
-        if _requirement_is_covered(conn, token):
+        status = (_requirement_status(conn, token, library_ascii)
+                  if check_unverifiable
+                  else ("covered" if _requirement_is_covered(conn, token)
+                        else "missing"))
+        if status == "covered":
             covered.append(token)
+        elif status == "unverifiable":
+            unverifiable.append(token)
         else:
             missing.append(token)
-    req_ratio = (len(covered) / len(requirements)) if requirements else 1.0
+    # 分母**只算能核对的**：无法核对的既不算达标也不算缺失，否则一个中文要求
+    # 就能把这一维度永久钉死在 0，硬闸门永远过不去。
+    checkable = len(covered) + len(missing)
+    req_ratio = (len(covered) / checkable) if checkable else 1.0
     min_req = _threshold(s, "section_sufficiency_min_requirement_ratio", 0.5)
     requirements_score = req_ratio
 
@@ -535,8 +589,11 @@ def evaluate_sufficiency(
         _gate("conditions", quantity_ratio >= min_quantity,
               f"带量化条件的超边 {with_quantity}/{total_hyper} / 需 ≥ {min_quantity:.0%}")
     if requirements:
-        _gate("requirements", req_ratio >= min_req,
-              f"要求覆盖 {len(covered)}/{len(requirements)} / 需 ≥ {min_req:.0%}")
+        detail = (f"要求覆盖 {len(covered)}/{checkable} / 需 ≥ {min_req:.0%}")
+        if unverifiable:
+            detail += (f"（另有 {len(unverifiable)} 条无法在库内核对，未计入："
+                       f"{'、'.join(unverifiable[:4])}…）")
+        _gate("requirements", req_ratio >= min_req, detail)
     if paper_keys:
         _gate("evidence", len(evidence_ids) >= min_evidence,
               f"可用证据 {len(evidence_ids)} 条 / 需 ≥ {min_evidence} 条")
@@ -574,7 +631,8 @@ def evaluate_sufficiency(
          "hyperedges": total_hyper, "with_quantity": with_quantity,
          "quantity_ratio": round(quantity_ratio, 2), "min_quantity": min_quantity,
          "requirements": len(requirements), "covered": covered[:6],
-         "missing": missing[:6], "min_req": min_req,
+         "missing": missing[:6], "unverifiable": unverifiable[:6],
+         "min_req": min_req,
          "evidence": len(evidence_ids), "min_evidence": min_evidence,
          "comparison": comparison_count, "min_comparison": min_comparison,
          "met_dimensions": [g["gate"] for g in gates
@@ -612,7 +670,13 @@ def evaluate_sufficiency(
             "hyperedges_with_quantity": with_quantity,
             "evidence_ids": len(evidence_ids),
             "requirements_total": len(requirements),
+            "requirements_covered": covered,
             "requirements_missing": missing,
+            # 无法在库内核对的（多为"中文要求 vs 英文知识库"）：既不算达标也不算
+            # 缺失，也不计入闸门分母——否则硬闸门永远过不去。界面应如实展示。
+            "requirements_unverifiable": unverifiable,
+            "library_ascii": library_ascii,
+            "requirements_checkable": checkable,
             "comparison_groups": comparison_count,
             "min_comparison": min_comparison,
         },
@@ -664,6 +728,10 @@ def _build_reasons(decision: str, confidence: float, threshold: float,
     if info["evidence"] < info["min_evidence"]:
         reasons.append(
             f"可用证据编号 {info['evidence']} 条 < 阈值 {info['min_evidence']} 条")
+    if info.get("unverifiable"):
+        reasons.append(
+            "以下要求无法在库内核对（要求为中文、库内知识为英文，不做缺失判定）："
+            + "、".join(info["unverifiable"][:6]))
     if info.get("comparison", 0) < info.get("min_comparison", 1):
         reasons.append(
             f"可比证据组 {info.get('comparison', 0)} 组 < 阈值 "

@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import logging
 import sqlite3
+import time
 from typing import Any
 
 from research_agent.config import Settings, settings as default_settings
@@ -31,7 +32,20 @@ from research_agent.writing import interview as iv
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["run_collaboration", "build_retrieval_services", "build_retrieval_collector"]
+__all__ = ["run_collaboration", "build_retrieval_services",
+           "build_retrieval_collector", "KNOWLEDGE_ONLY_DIMENSIONS"]
+
+#: 判定里**只有抽取才能改善**的维度。
+#:
+#: 来源（`sufficiency.py` 的真实 SQL）：`papers` 是实时查 `papers` 表，检索入库
+#: 立刻生效；而 `knowledge`（processing_log 的 extracted 占比）、`conditions`
+#: （超边带条件/测量的比例）、`requirements`（知识库词元覆盖）、`evidence`
+#: （超边/边条数）、`comparison`（按类型成组）**全部读抽取产物**。
+#:
+#: 所以"只检索不抽取"最多只能补上 papers 一个维度——其余五个纹丝不动，
+#: 判定结论不会变，用户看到的就是"补检了还是不行"而卡在同一处。
+KNOWLEDGE_ONLY_DIMENSIONS = ("knowledge", "conditions", "requirements",
+                            "evidence", "comparison")
 
 
 def build_retrieval_services(settings: Settings | None = None) -> Any:
@@ -107,9 +121,21 @@ def run_collaboration(
                 "added": 0, "extracted": 0,
                 "summary": "保留缺口（按用户决定，不补齐）", "steps": []}
 
-    # 自定义任务：取用户选定的执行方案；否则就是"补检索"
+    # 自定义任务：取用户选定的执行方案；否则就是"补检索"。
     plan = _selected_custom_plan(section_state)
-    tasks = list(plan.get("tasks") or ["retrieve"])
+    if plan:
+        tasks = list(plan.get("tasks") or ["retrieve"])
+        extract_scope = str(plan.get("extract_scope") or "new")
+    else:
+        # **普通「补检」必须连抽取一起做**。
+        #
+        # 判定的六个维度里只有 papers 读检索产物；knowledge / conditions /
+        # requirements / evidence / comparison 全读抽取产物。只抓不抽 ⇒
+        # 新文献进不了知识库 ⇒ 判定结论不变 ⇒ 用户反复点补检也永远"卡在"同一处
+        # （实测：抓回 116 篇、抽取 0 篇，三个硬闸门一个都没动）。
+        tasks = ["retrieve", "extract_knowledge"]
+        extract_scope = _preferred_extract_scope(conn, section_state)
+
     queries = list(plan.get("query_terms")
                    or (section_state.verdict.get("suggested_queries") or []))
     rounds_cap = int(section_state.collection_rounds
@@ -122,6 +148,7 @@ def run_collaboration(
     extracted_total = 0
     rounds_done = 0
     exhausted = False
+    extract_note = ""
 
     if "retrieve" in tasks:
         added_total, rounds_done, steps, exhausted = _do_retrieve(
@@ -129,15 +156,21 @@ def run_collaboration(
             rounds_cap=rounds_cap, settings=s, progress_cb=progress_cb)
 
     if "extract_knowledge" in tasks:
-        scope = str(plan.get("extract_scope") or "new")
         extracted_total, extract_steps = _do_extract(
-            conn, scope=scope, project=project, section_key=section_key,
+            conn, scope=extract_scope, project=project, section_key=section_key,
             added_keys=_added_keys(steps), settings=s, progress_cb=progress_cb)
         steps.extend(extract_steps)
+        for item in extract_steps:
+            if item.get("note"):
+                extract_note = str(item["note"])
 
     summary_bits = [f"检索 {rounds_done} 轮", f"新增 {added_total} 篇"]
     if "extract_knowledge" in tasks:
+        # 抽取数**必须无条件下报**：为 0 时也要让用户看见，
+        # 否则"补检了但没抽"这件事在界面上完全不可见（实测就是这样漏掉的）。
         summary_bits.append(f"抽取 {extracted_total} 篇")
+        if extracted_total == 0 and extract_note:
+            summary_bits.append(f"（{extract_note}）")
     if exhausted:
         summary_bits.append("连续无新增，已提前停止")
     _progress(progress_cb, 90.0, "、".join(summary_bits))
@@ -150,11 +183,48 @@ def run_collaboration(
         "extracted": extracted_total,
         "queries": queries[:6],
         "tasks": tasks,
-        "extract_scope": plan.get("extract_scope") or "",
+        # 实际用的抽取范围：普通补检时由 `_preferred_extract_scope` 决定，
+        # 不再是空串（以前只有自定义任务才有值，日志里看不出来）。
+        "extract_scope": extract_scope if "extract_knowledge" in tasks else "",
         "exhausted": exhausted,
         "summary": "、".join(summary_bits),
         "steps": steps,
     }
+
+
+def _preferred_extract_scope(conn: sqlite3.Connection,
+                             sec: iv.SectionPlanState) -> str:
+    """普通「补检」该抽哪批文献。
+
+    判据是**哪一批更可能补上缺的维度**：
+
+    - 缺的维度里有 knowledge / conditions / requirements / evidence /
+      comparison 这类"知识类"维度 → 库里**已经有**同主题未抽取的文献时优先抽它们
+      （不花检索配额，而且往往正是瓶颈："文献有但没抽"）；
+    - 否则（只缺 papers）→ 抽这次新抓回来的；
+    - 两批都有 → ``both``，先抽新的再补既有。
+    """
+    unmet = set(sec.verdict.get("unmet_dimensions") or [])
+    knowledge_gap = bool(unmet & set(KNOWLEDGE_ONLY_DIMENSIONS)) or not unmet
+    pending_existing = _pending_existing_count(conn)
+    if knowledge_gap and pending_existing:
+        return "both" if not unmet or "papers" not in unmet else "existing"
+    if knowledge_gap and not pending_existing:
+        return "new"
+    return "new"
+
+
+def _pending_existing_count(conn: sqlite3.Connection) -> int:
+    """库内已入库、但还没有抽取记录的文献数（判断"抽既有"值不值得）。"""
+    try:
+        row = conn.execute(
+            "SELECT COUNT(*) AS c FROM papers p WHERE p.status='ingested' "
+            "AND NOT EXISTS (SELECT 1 FROM processing_log l "
+            "                WHERE l.paper_key = p.paper_key "
+            "                  AND l.event = 'extracted')").fetchone()
+    except sqlite3.Error:
+        return 0
+    return int(row["c"] or 0) if row else 0
 
 
 def _selected_custom_plan(sec: iv.SectionPlanState) -> dict[str, Any]:
@@ -243,36 +313,76 @@ def _do_extract(conn: sqlite3.Connection, *, scope: str,
     """执行知识抽取。
 
     - ``scope == "new"``：只抽本次新增的文献；
-    - ``scope == "existing"``：抽库内**同主题**的既有文献（常见瓶颈是"有文献但没抽"）。
+    - ``scope == "existing"``：抽库内**同主题**的既有文献（常见瓶颈是"有文献但没抽"）；
+    - ``scope == "both"``：先抽新增的，再补既有的。
+
+    两个上限都来自配置：``section_extract_max_papers``（篇数）与
+    ``section_extract_max_seconds``（时长）。**上限不能太小**：抽取是逐个 LLM
+    调用，而上限过小会让"补检"永远推不动知识覆盖率——实测原先是 20 篇，
+    而把覆盖率从 30% 提到 60% 需要约 120 篇，于是用户每点一次补检都"没有变化"。
     """
     from research_agent.pipeline import process_papers
 
-    if scope == "new":
-        targets = added_keys[:20]
-    else:
-        targets = _existing_same_topic_keys(
-            conn, str(project.get("topic") or project.get("title") or ""),
-            limit=20)
+    topic = str(project.get("topic") or project.get("title") or "")
+    limit = max(1, int(getattr(settings, "section_extract_max_papers", 60) or 60))
+    budget = max(30, int(getattr(settings, "section_extract_max_seconds", 900)
+                         or 900))
+
+    targets: list[str] = []
+    if scope in ("new", "both"):
+        targets.extend(str(k) for k in added_keys)
+    if scope in ("existing", "both"):
+        # 既有那一批按"同主题且未抽取"取，留出与新增不重复的额度
+        targets.extend(_existing_same_topic_keys(conn, topic, limit=limit))
+    # 去重且保序（新增优先），再截断到上限
+    seen: set[str] = set()
+    unique: list[str] = []
+    for key in targets:
+        if key and key not in seen:
+            seen.add(key)
+            unique.append(key)
+    targets = unique[:limit]
+
     if not targets:
         return 0, [{"task": "extract_knowledge", "scope": scope, "ok": True,
                     "count": 0, "note": "没有可抽取的目标文献"}]
 
     _progress(progress_cb, 70.0, f"正在抽取 {len(targets)} 篇文献的知识…")
     services = build_retrieval_services(settings)
+    started = time.monotonic()
     ok = 0
+    failed = 0
+    stopped_by = ""
     for index, key in enumerate(targets, 1):
+        if time.monotonic() - started > budget:
+            stopped_by = f"已达抽取时长上限（{budget}s），已抽 {ok} 篇"
+            break
         _progress(progress_cb, 70.0 + 20.0 * index / max(1, len(targets)),
                   f"抽取 {index}/{len(targets)}：{key}")
         try:
             results = process_papers([key], services=services, conn=conn)
         except Exception as exc:  # noqa: BLE001
             logger.warning("抽取失败 %s: %s", key, exc)
+            failed += 1
             continue
         status = str((results[0] if results else {}).get("status") or "")
         if status in ("extracted", "knowledge"):
             ok += 1
-    return ok, [{"task": "extract_knowledge", "scope": scope, "ok": True,
-                 "count": ok, "targets": targets}]
+        else:
+            failed += 1
+
+    step: dict[str, Any] = {"task": "extract_knowledge", "scope": scope,
+                            "ok": True, "count": ok, "attempted": len(targets),
+                            "failed": failed, "targets": targets[:50],
+                            "seconds": round(time.monotonic() - started, 1)}
+    if stopped_by:
+        step["note"] = stopped_by
+    elif ok == 0:
+        # 一篇都没成，必须说清原因——最可能是知识模型没配/没 Key，
+        # 而不是"库里没东西可抽"。沉默会让用户以为补检生效了。
+        step["note"] = ("抽取未成功：知识提炼模型不可用或全部失败"
+                        if failed else "没有可抽取的目标文献")
+    return ok, [step]
 
 
 def _existing_same_topic_keys(conn: sqlite3.Connection, topic: str,

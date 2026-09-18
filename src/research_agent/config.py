@@ -130,6 +130,17 @@ class Settings:
     section_sufficiency_min_condition_ratio: float = 0.3
     section_sufficiency_min_requirement_ratio: float = 0.5
     section_sufficiency_min_evidence: int = 3
+    # 要求覆盖只能"如实判定"：要求词元若是中文、而库内知识是英文，用 LIKE 去查
+    # 必然 0 命中——那不是"库里缺这个"，而是"我们没法核对"。把这类词元算作
+    # **无法核对**（不计入分母、不改判定），否则一个不可能达标的硬闸门会让这一节
+    # 永远写不出来。设 False 可恢复旧行为（一律算缺失）。
+    section_requirement_unverifiable_ok: bool = True
+    # 一次协作里最多抽取多少篇。抽取是逐个 LLM 调用（每篇约 5~20s），
+    # 上限太小会让"补检"永远推不动知识覆盖率（实测 20 篇上限时，
+    # 需要 ~120 篇才能把覆盖率从 30% 提到 60%）。
+    section_extract_max_papers: int = 60
+    # 抽取的总时长预算（秒）：超出就停下，剩余部分留给下一轮/下次补检。
+    section_extract_max_seconds: int = 900
     # 证据不足时是否仍然产出一版正文（默认 False = 不硬写，返回 needs_data）
     section_allow_write_when_insufficient: bool = False
     # 期刊分区表来自技能包 packs/skills/journal-quartiles（可用
@@ -213,6 +224,13 @@ class Settings:
             s.section_sufficiency_min_requirement_ratio)
         s.section_sufficiency_min_evidence = int(os.getenv(
             "RA_SECTION_MIN_EVIDENCE", s.section_sufficiency_min_evidence))
+        s.section_requirement_unverifiable_ok = _env_bool(
+            "RA_SECTION_REQUIREMENT_UNVERIFIABLE_OK",
+            s.section_requirement_unverifiable_ok)
+        s.section_extract_max_papers = int(os.getenv(
+            "RA_SECTION_EXTRACT_MAX_PAPERS", s.section_extract_max_papers))
+        s.section_extract_max_seconds = int(os.getenv(
+            "RA_SECTION_EXTRACT_MAX_SECONDS", s.section_extract_max_seconds))
         s.section_allow_write_when_insufficient = _env_bool(
             "RA_SECTION_ALLOW_WRITE_WHEN_INSUFFICIENT",
             s.section_allow_write_when_insufficient)
