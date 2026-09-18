@@ -58,6 +58,20 @@ STAGE_WRITING = "writing"
 STAGE_DONE = "done"
 STAGE_FAILED = "failed_writable"
 
+#: 阶段的中文文案（后端是唯一来源，界面直接用它，避免两处漂移）
+STAGE_LABEL = {
+    STAGE_PENDING: "待访谈",
+    STAGE_DRAFTING: "正在拟方案",
+    STAGE_AWAITING_CHOICE: "等你选方案",
+    STAGE_JUDGING: "正在判定支撑",
+    STAGE_AWAITING_GAP: "等你决定缺口",
+    STAGE_AWAITING_CUSTOM: "等你确认任务",
+    STAGE_COLLABORATING: "正在补齐支撑",
+    STAGE_WRITING: "正在写作",
+    STAGE_DONE: "已完成",
+    STAGE_FAILED: "写作失败",
+}
+
 #: 缺口决定的三个出口
 GAP_KEEP = "keep_gap"
 GAP_COLLECT = "collect"
@@ -369,6 +383,17 @@ def current_question(conn: sqlite3.Connection, project_id: int,
                             for p in sec.custom_plans]
                 + [{"id": "ai", "label": "让 AI 自己决定"},
                    {"id": "refine", "label": "我再明确一点"}]}
+
+    # 作业驱动的阶段：此刻**没有**问题要问用户，界面应显示"正在处理"而不是
+    # 硬凑一个问题出来。此前这些阶段会落到下面的默认分支，返回一个
+    # `section_choice`（选项还可能是空的）——用户看到一个即将被替换的问题，
+    # 点了也白点。`next_action` 非空时界面会自动续跑，这里如实说明即可。
+    if sec.stage in (STAGE_DRAFTING, STAGE_JUDGING, STAGE_COLLABORATING,
+                     STAGE_WRITING):
+        return {"kind": "working", "section_key": key, "heading": heading,
+                "stage": sec.stage,
+                "label": STAGE_LABEL.get(sec.stage, "正在处理"),
+                "done": False}
 
     # 默认：进入"这部分写什么内容"的问答
     return {"kind": "section_choice", "section_key": key, "heading": heading,

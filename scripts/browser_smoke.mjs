@@ -253,24 +253,19 @@ async function main() {
     // ---------------- ⑥ 对节点下指令（自然语言 → 派工方案 → 下单） ----------------
     // 这是方案 v8 里唯一的"直下指令"入口。离线模式下解析走确定性关键词识别，
     // 因此这条回归不依赖模型与网络，却能覆盖"解析→选方案→下单→逐步回报"整链。
-    // 注意两点：
-    //   ① hash 里的 `?offline=1` 会让首跳落到总览页（SPA 路由不认带查询串的 hash），
-    //      所以必须点导航；
-    //   ② 离开写作台会 `unmount()` 并清空 `current`，切回来落在**项目选择**视图，
-    //      要重新选项目才能看到访谈面板。
+    // 注意三点：
+    //   ① hash 里的 `?offline=1` 会让首跳落到总览页（SPA 路由不认带查询串的 hash）；
+    //   ② 离开写作台会 `unmount()` 并清空 `current`，切回来落在**项目选择**视图；
+    //   ③ 重新选项目后，若快照里还有未完成的步骤，界面会**自动续跑**（这正是
+    //      "重开页面不再卡住"的行为），所以不该假设一定能看到选择题。
     await page.click('.nav-item[data-page="experiment"]');
     await page.waitForTimeout(800);
     await page.click('.nav-item[data-page="writing"]');
-    await page.waitForTimeout(1500);
-    if (!(await page.locator("#wrBody").count())) {
-      await page.click('.nav-item[data-page="writing"]');
-      await page.waitForTimeout(1500);
-    }
-    await page.waitForSelector("[data-project], [data-choice]", { timeout: 30000 });
+    await page.waitForSelector("#wrBody", { timeout: 30000 });
     if (!(await page.locator("#wrDirectText").count())) {
       await page.locator("[data-project]").first().click();
-      await page.waitForSelector("#wrDirectText", { timeout: 30000 });
     }
+    await page.waitForSelector("#wrDirectText", { timeout: 30000 });
     check(true, "回到写作台仍能继续访谈并看到指令面板");
     await page.fill("#wrDirectText", "重建本体视图");
     await page.click("#wrDirectParse");
@@ -290,6 +285,54 @@ async function main() {
     check(Boolean(dispatched), "下单后有派工单回报",
           dispatched ? `${dispatched.id} ${dispatched.status}` : "未出现");
     await shot("11b-directive-dispatched");
+
+    // ---------------- ⑦ 刷新页面后自动续跑未完成的步骤 ----------------
+    // 用户报的"卡住"：作业活在进程内存里，刷新/换页就丢了，但状态里的
+    // `next_action` 还在。此前 `runStep()` 只在"刚作答完"那一条路上被调用，
+    // 于是重开页面永远显示「处理中…」。现在加载快照后会自动续跑。
+    {
+      const readState = () => page.evaluate(async () => {
+        const list = await (await fetch("/api/writing/projects")).json();
+        const pid = list[0] && list[0].project_id;
+        const snap = await (await fetch(
+          `/api/writing/projects/${pid}/interview`)).json();
+        return {
+          next: snap.next_action || "",
+          kind: (snap.question || {}).kind || "",
+          finished: Boolean(snap.finished),
+          stage: (snap.question || {}).stage || "",
+        };
+      });
+      const before = await readState();
+      // 制造"有未完成步骤"的局面：直接问后端状态，然后刷新页面
+      await page.reload({ waitUntil: "domcontentloaded" });
+      await page.waitForSelector("#wrBody", { timeout: 30000 });
+      if (!(await page.locator("#wrDirectText").count())) {
+        await page.locator("[data-project]").first().click();
+        await page.waitForSelector("#wrDirectText", { timeout: 30000 });
+      }
+      // 刷新后不该停在"处理中"不动：要么续跑完成（next 变空/换题），要么问出下一题
+      const settled = await page.waitForFunction(async (prevNext) => {
+        const list = await (await fetch("/api/writing/projects")).json();
+        const pid = list[0] && list[0].project_id;
+        const snap = await (await fetch(
+          `/api/writing/projects/${pid}/interview`)).json();
+        const next = snap.next_action || "";
+        const kind = (snap.question || {}).kind || "";
+        if (snap.finished) return { next, kind, why: "finished" };
+        if (next !== prevNext) return { next, kind, why: "moved-on" };
+        if (kind && kind !== "working" && !next) {
+          return { next, kind, why: "awaiting-user" };
+        }
+        return null;
+      }, before.next, { timeout: 120000 })
+        .then((h) => h.jsonValue()).catch(() => null);
+      check(Boolean(settled), "刷新页面后自动续跑未完成的步骤",
+            settled ? `next ${before.next || "-"} → ${settled.next || "-"}`
+                      + `（${settled.why}，kind=${settled.kind}）`
+                    : `仍停在 next=${before.next} kind=${before.kind}`);
+    }
+    await shot("11c-resume-after-reload");
 
     // ---------------- ⑦ 研究流程页（登记表驱动 + 派工板） ----------------
     // 这一页以前对几乎每个节点都显示"已完成"（有事件就算完成），

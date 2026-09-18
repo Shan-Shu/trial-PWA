@@ -546,9 +546,16 @@ def main(argv: list[str] | None = None) -> int:
         status, s = post(f"{base}/api/writing/projects/{iv_pid}/interview/answer",
                          {"kind": "intake", "step": "sections",
                           "value": ["objective", "parameters"]})
+        # 前置问完 → 该界面起"拟方案"作业了。此时**没有**问题要问用户，
+        # 后端如实返回 `working`（此前会返回一个还没生成的 section_choice，
+        # 用户看到一个即将被替换的问题）。
         check(s.get("total") == 2
-              and (s["question"] or {}).get("kind") == "section_choice",
-              "访谈：前置问完即进入逐部分闭环", str(s.get("question"))[:160])
+              and (s["question"] or {}).get("kind") == "working",
+              "访谈：前置问完即进入逐部分闭环（作业阶段如实显示处理中）",
+              str(s.get("question"))[:160])
+        check((s["question"] or {}).get("stage") == "drafting_options"
+              and bool((s["question"] or {}).get("label")),
+              "访谈：处理中状态带阶段文案", str(s.get("question"))[:160])
         check(s.get("next_action") == "draft_options",
               "访谈：快照告知界面该起作业（拟方案）")
 

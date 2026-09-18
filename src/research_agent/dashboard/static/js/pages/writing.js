@@ -28,6 +28,8 @@ let snap = null;
 let busy = false;
 /** 正在推进一次作答（含轮询作业）；此期间禁止自动刷新抢占 */
 let isAdvancing = false;
+/** 等待中的 `runStep` 的 resolve：`stopPolling()`/`unmount()` 用它把 Promise 收掉 */
+let pendingStepResolve = null;
 /** 「对节点下指令」面板的本地状态（解析结果与最近一次派工） */
 let directive = { text: "", plans: [], note: "", parsed_by: "", error: "",
                   dispatched: null };
@@ -102,6 +104,9 @@ export const writingPage = {
     if (current) {
       await loadSnapshot();
       render();
+      // 快照里还有未完成的步骤就接着跑完（作业在内存里，换页/刷新会丢）。
+      // 不 await：refresh 是 shell 调的，等整条链跑完会让自动刷新看起来卡死。
+      void pumpSteps();
       return;
     }
     await loadProjects();
@@ -109,15 +114,32 @@ export const writingPage = {
   },
 
   unmount() {
+    // `stopPolling()` 会把等待中的 `runStep` 放掉（见其实现）：只 clearInterval
+    // 的话那个 Promise 永远不 resolve，`isAdvancing` 就卡在 true，
+    // 回到写作台时 `refresh()` 会一直提前返回——整页空白，看起来就是"卡住"。
     stopPolling();
+    isAdvancing = false;
+    busy = false;
+    inFlightKey = "";
     host = null;
     current = null;
     snap = null;
   },
 };
 
+/** 停轮询，并**放掉**正在等待的 `runStep`。
+ *
+ * 只 `clearInterval` 是不够的：`runStep` 的 Promise 靠轮询回调来 resolve，
+ * 定时器一清就再也没人 resolve 它，`await` 它的 `pumpSteps` 会永远挂着、
+ * `isAdvancing` 永远为 true。换页再回来时 `refresh()` 一直提前返回 ⇒ 空白页。
+ */
 function stopPolling() {
   if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+  if (pendingStepResolve) {
+    const done = pendingStepResolve;
+    pendingStepResolve = null;
+    done();
+  }
 }
 
 // ------------------------------------------------------------------ 项目选择
@@ -225,7 +247,7 @@ function questionKey(kind) {
   return `${kind}:${head}:${q.step || q.section_key || ""}:${q.kind || ""}`;
 }
 
-/** 回答之后：立刻收起这一题，若还有待执行步骤就起作业并轮询 */
+/** 回答之后：立刻收起这一题，然后把待执行的步骤交给 pump 跑完 */
 async function answerAndAdvance(payload) {
   const key = questionKey(payload.kind);
   if (busy || inFlightKey === key) {
@@ -234,7 +256,6 @@ async function answerAndAdvance(payload) {
     return;
   }
   busy = true;
-  isAdvancing = true;
   inFlightKey = key;
   console.info("[writing] 提交作答", key, JSON.stringify(payload));
   logUiEvent("ui.state", { what: "submit", key, kind: payload.kind,
@@ -252,22 +273,63 @@ async function answerAndAdvance(payload) {
     logUiEvent("ui.state", { what: "submit_ok", key,
                              next_action: res.next_action || "",
                              question: (res.question || {}).kind || "" });
-    if (res.next_action) {
-      await runStep();
-    } else {
-      render();
-    }
   } catch (err) {
     console.error("[writing] 作答失败", err);
     logUiEvent("ui.state", { what: "submit_failed", key,
                              error: String((err && err.message) || err) });
     toastError(err);
     clearQuestion("");
-    render();
   } finally {
     busy = false;
     inFlightKey = "";
-    isAdvancing = false;
+  }
+  render();
+  await pumpSteps();
+}
+
+/**
+ * 把快照里待执行的步骤**一路跑完**（作业是短作业，一步一件事）。
+ *
+ * 为什么必须由它统一负责：状态机是"起作业 → 轮询"的短作业模型，而作业活在
+ * **进程内存**里。关掉页面、刷新、切到别的页再回来，作业就没了，可状态里的
+ * `next_action` 还在——此前 `runStep()` 只在"刚作答完"这一条路上被调用，
+ * 于是重开页面只会显示「处理中…」永远等下去（用户报的"卡住"就是它）。
+ *
+ * 循环条件只看快照里的 `next_action`，因此三个入口共用同一条逻辑：
+ * 刚作答完、页面加载、手动刷新。
+ */
+async function pumpSteps() {
+  let stallGuard = 0;
+  let lastSignature = "";
+  while (snap && snap.ok && !snap.finished && snap.next_action) {
+    if (busy || isAdvancing) return;          // 已有一次推进在跑
+    const signature = `${snap.next_action}:${currentStage()}`;
+    if (signature === lastSignature) {
+      // 同一步反复没有进展：继续重试只会烧配额，如实停下并说明
+      stallGuard += 1;
+      if (stallGuard >= 3) {
+        setProgress("推进没有进展，已停止自动重试");
+        logUiEvent("ui.state", { what: "pump_stalled", signature });
+        toast("这一步没有产生进展，已停止自动重试；可刷新或换项目", "warn");
+        return;
+      }
+    } else {
+      lastSignature = signature;
+      stallGuard = 0;
+    }
+    isAdvancing = true;
+    try {
+      setProgress("正在处理…");
+      await runStep();                        // 内部会 loadSnapshot + render
+    } catch (err) {
+      console.error("[writing] 推进失败", err);
+      logUiEvent("ui.state", { what: "step_failed",
+                               error: String((err && err.message) || err) });
+      toastError(err);
+      return;
+    } finally {
+      isAdvancing = false;
+    }
   }
 }
 
@@ -276,24 +338,34 @@ async function runStep() {
     `/api/writing/projects/${current.project_id}/interview/step`,
     { use_model: !OFFLINE });
   if (!res.ok) throw new Error(res.error || "无法推进");
-  if (!res.job_id) { await loadSnapshot(); return; }
+  if (!res.job_id) {
+    // 没有可起的作业（状态已变/无事可做）：重读快照即可，别让界面停在旧状态
+    await loadSnapshot();
+    render();
+    return;
+  }
   setProgress("正在处理…");
   await new Promise((resolve) => {
-    stopPolling();
+    stopPolling();                  // 顺带放掉可能残留的上一次等待
+    pendingStepResolve = resolve;   // 让 unmount/换页能把它收掉，避免卡住
+    const finish = () => {
+      pendingStepResolve = null;
+      resolve();
+    };
     pollTimer = setInterval(async () => {
       try {
         const job = await api.get(`/api/writing/section-jobs/${res.job_id}`);
         if (job.message) setProgress(job.message);
         if (job.status === "running" || job.status === "cancelling") return;
-        stopPolling();
+        if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
         if (job.status === "error") toastError(new Error(job.error || "步骤失败"));
         await loadSnapshot();
         render();
-        resolve();
+        finish();
       } catch (err) {
-        stopPolling();
+        if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
         toastError(err);
-        resolve();
+        finish();
       }
     }, 1200);
   });
@@ -442,7 +514,26 @@ function renderQuestion() {
   if (q.kind === "section_choice") return renderSectionChoice(q);
   if (q.kind === "gap_decision") return renderGapDecision(q);
   if (q.kind === "custom_plan_choice") return renderCustomPlan(q);
+  if (q.kind === "working") return renderWorking(q);
   return `<div class="muted">无可交互的问题。</div>`;
+}
+
+/** 作业驱动的阶段：没有要问的，如实显示"正在做什么"。
+ *
+ * 后端在这些阶段不再返回一个（可能还是空的）选择题，因此这里也不会出现
+ * "点了没反应"的假选项——`pumpSteps()` 会把这些步骤自动跑完。
+ */
+function renderWorking(q) {
+  return `<div class="row" style="gap:8px;align-items:center">
+      ${badge(q.label || "正在处理", "blue")}
+      <b style="font-size:12.5px">${h(q.heading || q.section_key || "")}</b>
+    </div>
+    <div class="skeleton" style="width:64%;margin-top:8px"></div>
+    <div class="skeleton" style="width:41%;margin-top:5px"></div>
+    <div class="muted" style="font-size:11.5px;margin-top:8px">
+      这一阶段由后端作业执行，<b>无需作答</b>；完成后会自动进入下一题。
+      若长时间没有变化，可点上方「刷新」重试（作业活在内存里，刷新页面会丢）。
+    </div>`;
 }
 
 function renderIntake(q) {
@@ -646,10 +737,14 @@ function describeTarget(el) {
   return `${tag}${id}${attrs}`;
 }
 
-/** 当前所处阶段（诊断用）。 */
+/** 当前部分的阶段（诊断日志与"同一步反复无进展"的判断都用它）。 */
 function currentStage() {
-  const stage = (snap && (snap.stage || (snap.question || {}).stage)) || "";
-  return String(stage);
+  const q = (snap && snap.question) || {};
+  if (q.stage) return String(q.stage);
+  const key = q.section_key || "";
+  const section = ((snap && snap.sections) || [])
+    .find((s) => s.section_key === key);
+  return section ? String(section.stage || "") : "";
 }
 
 /** 按 data-* 与 id 派发；返回 true 表示已处理 */
