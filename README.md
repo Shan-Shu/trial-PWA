@@ -58,8 +58,9 @@ uv run python scripts/smoke_desk_dispatch.py        # 自然语言 → 规划节
 ```
 
 - **单测请用 `scripts/run_tests.py`**：它把 `RA_DB_PATH` 指向临时文件，并在跑完后对账
-  真实库快照。直接 `python -m unittest discover -s tests` 曾会让少数用例把
-  `processing_log` 写进默认库 `data/research_agent.db`——调用点已修，这个运行器是防它再犯的那道网。
+  真实库快照——**默认库不存在也算一种状态**（测试期间把它创建出来或删掉，同样判为异常）。
+  直接 `python -m unittest discover -s tests` 曾会让少数用例把 `processing_log` 写进
+  默认库 `data/research_agent.db`——调用点已修，这个运行器是防它再犯的那道网。
 - 删除写作项目**不可恢复**，但删除前会自动留档到 `data/deleted_projects/<时间>-p<id>.json`
   （含项目、大纲与决策轨迹），并写一条 WARN 级 `project.deleted` 事件——留档不增加任何操作步骤。
 - `smoke_desk.py` 用 `streamlit.testing.v1.AppTest` 在进程内真跑页面。**HTTP GET 证明不了界面正常**——

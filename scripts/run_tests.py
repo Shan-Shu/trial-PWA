@@ -64,10 +64,33 @@ def _snapshot(path: Path) -> dict[str, int] | None:
 def _diff(before: dict[str, int], after: dict[str, int]) -> list[str]:
     out: list[str] = []
     for name in sorted(set(before) | set(after)):
-        was, now = before.get(name, 0), after.get(name, 0)
+        was = before.get(name, 0)
+        now = after.get(name, 0)
         if was != now:
             out.append(f"  {name}: {was} → {now}")
     return out
+
+
+def _verdict(before: dict[str, int] | None,
+             after: dict[str, int] | None) -> tuple[bool, str]:
+    """对账真实库。返回 ``(是否干净, 说明)``。
+
+    **库不存在也要判**：删掉默认库之后，以前的写法（before/after 任一为 None 就跳过）
+    会失去基线——真要有测试连上去把它建出来，反而一声不响。这里把"测试期间创建了
+    默认库"和"测试期间把它删了"都算作异常。
+    """
+    if before is None and after is None:
+        return True, "✓ 默认库不存在，且测试没有创建它"
+    if before is None and after is not None:
+        return False, (f"✗ 测试期间**创建了**默认库（{len(after)} 张表）——"
+                       "有代码连到了全局默认库路径")
+    if after is None:
+        return False, "✗ 默认库在测试期间被删除"
+    changed = _diff(before, after)
+    if changed:
+        return False, ("\n✗ 真实库被改动了 —— 有测试写进了默认库：\n"
+                       + "\n".join(changed))
+    return True, "✓ 真实库快照未变（未被测试写入）"
 
 
 def main() -> int:
@@ -78,7 +101,7 @@ def main() -> int:
 
     before = _snapshot(REAL_DEFAULT_DB)
     if before is None:
-        print(f"（未找到默认库 {REAL_DEFAULT_DB.name}，跳过对账）")
+        print(f"（默认库 {REAL_DEFAULT_DB.name} 当前不存在；仍会对账「是否被创建」）")
 
     env = dict(os.environ)
     with tempfile.TemporaryDirectory(prefix="ra-test-db-") as tmp:
@@ -94,14 +117,11 @@ def main() -> int:
 
     code = proc.returncode
     after = _snapshot(REAL_DEFAULT_DB)
-    if before is not None and after is not None:
-        changed = _diff(before, after)
-        if changed:
-            print("\n✗ 真实库被改动了 —— 有测试写进了默认库：")
-            print("\n".join(changed))
-            print("  请让相关用例显式传入 conn/settings（临时库）。")
-            return 1
-        print("\n✓ 真实库快照未变（未被测试写入）")
+    clean, message = _verdict(before, after)
+    print("\n" + message)
+    if not clean:
+        print("  请让相关用例显式传入 conn/settings（临时库）。")
+        return 1
     return code
 
 
