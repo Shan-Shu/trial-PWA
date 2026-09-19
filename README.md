@@ -50,18 +50,18 @@ uv run research-desk-api --port 8000
 四层回归，全部可离线复跑（`RA_DESK_OFFLINE=1` 时不调模型，也不烧配额）：
 
 ```powershell
-uv run python scripts/run_tests.py                    # 引擎单测（428 项，自带"真实库未被写入"对账）
+uv run python scripts/run_tests.py                    # 引擎单测（436 项，自带"真实库未被写入"对账）
 uv run python scripts/smoke_desk.py --db data\desk.db   # 10 页逐页渲染不报错
 uv run python scripts/smoke_desk_writing.py         # 写作台访谈闭环 → 正文落库
-uv run python scripts/smoke_desk_projects.py        # 写作台项目管理（重命名 / 批量删除）
+uv run python scripts/smoke_desk_projects.py        # 写作台项目管理（导航 / 重命名 / 批量删除）
 uv run python scripts/smoke_desk_dispatch.py        # 自然语言 → 规划节点 → 分发执行
 ```
 
 - **单测请用 `scripts/run_tests.py`**：它把 `RA_DB_PATH` 指向临时文件，并在跑完后对账
   真实库快照。直接 `python -m unittest discover -s tests` 曾会让少数用例把
-  `processing_log` 写进默认库 `data/research_agent.db`（一轮 20 行）——调用点已修，
-  这个运行器是防它再犯的那道网。
-
+  `processing_log` 写进默认库 `data/research_agent.db`——调用点已修，这个运行器是防它再犯的那道网。
+- 删除写作项目**不可恢复**，但删除前会自动留档到 `data/deleted_projects/<时间>-p<id>.json`
+  （含项目、大纲与决策轨迹），并写一条 WARN 级 `project.deleted` 事件——留档不增加任何操作步骤。
 - `smoke_desk.py` 用 `streamlit.testing.v1.AppTest` 在进程内真跑页面。**HTTP GET 证明不了界面正常**——
   Streamlit 页面在 WebSocket 会话里执行，普通请求只拿到空壳 HTML。
 - `smoke_desk_dispatch.py` 会**整库复制**一份到 `data/dispatch_smoke.db` 再派工，正式库只读；

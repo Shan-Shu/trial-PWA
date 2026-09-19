@@ -198,6 +198,65 @@ class WritingServiceTest(unittest.TestCase):
             (project_id,)).fetchone()
         self.assertEqual(int(left["c"]), 0)
 
+    def test_delete_project_archives_before_removing(self):
+        """删除前自动留档：不改变操作手感，但把"不可恢复"变成"可恢复"。
+
+        实测教训：正式库 16 个项目消失时既无日志也无备份，无从追溯也无法恢复。
+        """
+        import json
+
+        project_id = writing.create_project(self.conn, "留档测试", "主题")
+        writing.save_section(self.conn, project_id, "abstract", "摘要", "正文内容")
+        removed = writing.delete_project(self.conn, project_id)
+        out_dir = Path(writing.__file__).resolve().parents[3] / "data" / "deleted_projects"
+        files = sorted(out_dir.glob(f"*-p{project_id}.json"))
+        self.assertTrue(files, f"应留下留档文件，目录 {out_dir}")
+        payload = json.loads(files[-1].read_text(encoding="utf-8"))
+        self.assertEqual(payload["project"]["title"], "留档测试")
+        self.assertTrue(any("正文内容" in str(s.get("content"))
+                            for s in payload["sections"]),
+                        "留档里应含正文")
+        self.assertGreaterEqual(removed["sections"], 1)
+
+    def test_archive_failure_does_not_block_delete(self):
+        """留档失败绝不能让删除失败（用户要删就得删）。"""
+        from unittest import mock
+
+        project_id = writing.create_project(self.conn, "留档失败")
+        with mock.patch.object(writing, "_archive_project",
+                               side_effect=OSError("disk full")):
+            writing.delete_project(self.conn, project_id)
+        self.assertIsNone(writing.get_project(self.conn, project_id))
+
+    def test_delete_project_is_logged(self):
+        """删除必须留痕。
+
+        此前一声不响：实测发生过"正式库 16 个项目消失"，而统一事件日志里查不到
+        任何痕迹，只能靠外部副本去猜谁删了什么。级别用 WARN（不可恢复）。
+        """
+        from unittest import mock
+
+        project_id = writing.create_project(self.conn, "留痕测试")
+        with mock.patch.object(writing, "log_event") as spy:
+            writing.delete_project(self.conn, project_id)
+        self.assertTrue(spy.called, "删除应写一条事件")
+        args, kwargs = spy.call_args
+        self.assertEqual(args[0], "project.deleted")
+        self.assertEqual(kwargs.get("level"), "WARN")
+        self.assertEqual(kwargs["data"]["project_id"], project_id)
+        self.assertEqual(kwargs["data"]["title"], "留痕测试")
+
+    def test_rename_project_is_logged(self):
+        from unittest import mock
+
+        project_id = writing.create_project(self.conn, "旧名")
+        with mock.patch.object(writing, "log_event") as spy:
+            writing.rename_project(self.conn, project_id, title="新名")
+        self.assertTrue(spy.called, "改名应写一条事件")
+        args, kwargs = spy.call_args
+        self.assertEqual(args[0], "project.renamed")
+        self.assertEqual(kwargs["data"]["title"], "新名")
+
     def test_delete_project_reports_removed_counts(self):
         """删除要如实回报清掉了什么（界面据此告诉用户删掉了几节）。"""
         project_id = writing.create_project(self.conn, "待删统计")

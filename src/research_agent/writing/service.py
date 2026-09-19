@@ -18,6 +18,7 @@ from typing import Any
 from research_agent import packs
 from research_agent.config import Settings, settings as default_settings
 from research_agent.db import utcnow
+from research_agent.logging import log_event
 
 logger = logging.getLogger(__name__)
 
@@ -183,6 +184,47 @@ def _project_children(conn: sqlite3.Connection,
     }
 
 
+def _archive_project(conn: sqlite3.Connection, project_id: int,
+                     project: dict[str, Any]) -> str:
+    """删除前把该项目的数据留档，返回留档文件路径（失败返回空串）。
+
+    为什么要有它：删除**不可恢复**，而实测发生过"正式库 16 个项目消失"——当时
+    既没有日志、也没有备份，只能靠外部副本去猜。用户选的是"只要二次确认"，
+    所以这里**不给他加任何操作步骤**：留档是自动的、不可见的，不改变手感，
+    只是把"不可恢复"变成"可恢复"。
+
+    留档失败**绝不影响删除本身**（用户要删就得删），只记一条警告。
+    """
+    import json as _json
+    from datetime import datetime
+
+    from research_agent.config import PROJECT_ROOT
+
+    pid = int(project_id)
+    try:
+        sections = [dict(r) for r in conn.execute(
+            "SELECT * FROM writing_sections WHERE project_id=? ORDER BY section_id",
+            (pid,)).fetchall()]
+        try:
+            runs = [dict(r) for r in conn.execute(
+                "SELECT * FROM section_runs WHERE project_id=? "
+                "ORDER BY round", (pid,)).fetchall()]
+        except sqlite3.Error:
+            runs = []
+        out_dir = PROJECT_ROOT / "data" / "deleted_projects"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+        path = out_dir / f"{stamp}-p{pid}.json"
+        path.write_text(_json.dumps(
+            {"deleted_at": datetime.now().isoformat(timespec="seconds"),
+             "project": dict(project), "sections": sections, "runs": runs},
+            ensure_ascii=False, indent=2, default=str), encoding="utf-8")
+        return str(path)
+    except Exception as exc:  # noqa: BLE001 —— 留档失败不该让删除失败
+        logger.warning("项目删除留档失败（不影响删除）: %s", exc)
+        return ""
+
+
 def delete_project(conn: sqlite3.Connection,
                    project_id: int) -> dict[str, int]:
     """删除项目**及其全部产物**，返回被清掉的行数。
@@ -195,12 +237,33 @@ def delete_project(conn: sqlite3.Connection,
     而 `list_dispatches` 也是按 project_id 过滤的。这里显式删掉并如实回报。
     """
     pid = int(project_id)
+    project = get_project(conn, pid) or {}
+    # 调用点也要兜底：`_archive_project` 内部虽有 try，但它本身抛异常（磁盘满、
+    # 权限、被替换实现）时，删除**不能**跟着失败。
+    try:
+        archive = _archive_project(conn, pid, project)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("项目删除留档入口异常（不影响删除）: %s", exc)
+        archive = ""
     before = _project_children(conn, pid)
     conn.execute("DELETE FROM dispatch_runs WHERE project_id=?", (pid,))
     conn.execute("DELETE FROM writing_projects WHERE project_id=?", (pid,))
     conn.commit()
     after = _project_children(conn, pid)
-    return {key: before[key] - after.get(key, 0) for key in before}
+    removed = {key: before[key] - after.get(key, 0) for key in before}
+    # **删除必须留痕**。此前一声不响：实测发生过"正式库 16 个项目消失"，而统一
+    # 事件日志里查不到任何痕迹，只能靠外部副本去猜谁删了什么。级别用 WARN，
+    # 因为这一操作不可恢复。
+    try:
+        log_event("project.deleted", level="WARN", node="writing",
+                  data={"project_id": pid,
+                        "title": str(project.get("title") or ""),
+                        "removed": removed, "archive": archive}, db=conn)
+        conn.commit()
+    except Exception as exc:  # noqa: BLE001 —— 留痕失败不该让删除本身失败
+        logger.warning("项目删除留痕失败: %s", exc)
+    return removed
+
 
 
 def batch_delete_projects(conn: sqlite3.Connection,
@@ -263,6 +326,15 @@ def rename_project(conn: sqlite3.Connection, project_id: int,
     conn.execute(f"UPDATE writing_projects SET {', '.join(sets)} "
                  f"WHERE project_id=?", params)
     conn.commit()
+    try:
+        log_event("project.renamed", node="writing",
+                  data={"project_id": pid,
+                        "title": str(title).strip() if title is not None else None,
+                        "topic": str(topic).strip() if topic is not None else None},
+                  db=conn)
+        conn.commit()
+    except Exception as exc:  # noqa: BLE001 —— 留痕失败不该让改名本身失败
+        logger.warning("项目改名留痕失败: %s", exc)
     return get_project(conn, pid) or project
 
 
