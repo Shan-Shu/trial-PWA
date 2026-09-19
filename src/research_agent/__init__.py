@@ -6,7 +6,7 @@ from __future__ import annotations
 
 #: 本项目版本（research-desk）。引擎来源版本见 VERSIONS.md：
 #: trial / research-agent v0.4.5 @ 36a14fe（已冻结，tag frozen-before-research-desk）
-__version__ = "0.1.3"
+__version__ = "0.1.4"
 
 
 def main() -> None:

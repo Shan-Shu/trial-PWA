@@ -30,8 +30,21 @@ class BackendAdapter:
                  settings: Any = None) -> None:
         from research_agent.config import settings as default_settings
 
-        self.settings = settings or default_settings
-        self.db_path = str(db_path or self.settings.db_path)
+        base = settings or default_settings
+        self.db_path = str(db_path or base.db_path)
+        if settings is None and str(base.db_path) != self.db_path:
+            # **关键**：只给了 db_path、没给 settings 时，必须让 settings 也跟着
+            # 指向同一个库，否则会"对 A 库操作却写进 B 库"——适配器自己的查询走
+            # `self.db_path`（对的），但转发给引擎的 `settings` 仍是全局单例、
+            # 指向默认库 `data/research_agent.db`；凡是按 `settings.db_path` 取连接
+            # 的引擎路径（如补检里的 `run_topic`）就把结果写进了另一个库。
+            # 实测后果：启动器用 desk.db，而"补检"把抓到的文献与 PDF 全写进了
+            # research_agent.db（那一次把它从 1.1 MB 撑到 130 MB，desk.db 一篇没加）。
+            # 用 replace 复制而非直接改 base：全局单例不能被就地污染。
+            from dataclasses import replace
+
+            base = replace(base, db_path=Path(self.db_path))
+        self.settings = base
         #: 引擎没有对应概念、因此未能实现的方法（名 → 原因）
         self._gaps: dict[str, str] = {}
 

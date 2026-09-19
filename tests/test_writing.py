@@ -370,6 +370,64 @@ class ProjectDeleteGuardTest(unittest.TestCase):
         self.assertEqual(blocked, 5)
 
 
+class AdapterDbPathTest(unittest.TestCase):
+    """适配器只给 db_path 时，settings 必须跟着指向同一个库。
+
+    这是实测事故的回归：启动器用 `RA_DESK_DB=data\\desk.db` 调
+    `build_adapter(db_path=...)`，而 `settings` 默认是**全局单例**（指向
+    `data/research_agent.db`）。适配器自己的查询走 `self.db_path` 所以看着正常，
+    但转发给引擎的 settings 是另一个库——凡是按 `settings.db_path` 取连接的引擎
+    路径（补检里的 `run_topic`）就把结果写进了错误的库。
+    后果：抓到的文献与 PDF 全进 research_agent.db（实测把它从 1.1 MB 撑到 130 MB），
+    而 desk.db 一篇都没加，用户点完"补检"等于白跑。
+
+    **这是"对 A 库操作却写进 B 库"的同类缺陷**，必须在适配器入口就堵死。
+    """
+
+    def test_settings_follows_explicit_db_path(self):
+        from desk.backend import build_adapter
+
+        adapter = build_adapter(db_path=r"D:\tmp\somewhere\desk.db")
+        self.assertEqual(str(adapter.db_path), r"D:\tmp\somewhere\desk.db")
+        self.assertEqual(str(adapter.settings.db_path),
+                         r"D:\tmp\somewhere\desk.db",
+                         "settings.db_path 必须与适配器用同一个库")
+
+    def test_global_default_settings_not_mutated(self):
+        """修的是副本，不能就地改全局单例——那会污染同进程里其它调用方。"""
+        from desk.backend import build_adapter
+        from research_agent.config import settings as default_settings
+
+        before = str(default_settings.db_path)
+        build_adapter(db_path=r"D:\tmp\other\desk.db")
+        self.assertEqual(str(default_settings.db_path), before)
+
+    def test_explicit_settings_is_respected(self):
+        """调用方明确传了 settings 时，以它为准（不强行改写）。"""
+        from desk.backend import build_adapter
+        from research_agent.config import Settings
+
+        mine = Settings(db_path=Path(r"D:\tmp\mine.db"))
+        adapter = build_adapter(db_path=r"D:\tmp\given.db", settings=mine)
+        self.assertIs(adapter.settings, mine)
+
+    def test_retrieval_pipeline_lands_in_same_db(self):
+        """补检的检索流水线必须落在同一个库。
+
+        真正写库的是 `run_topic`：它按 ``services.settings.db_path`` 取连接。
+        所以这里直接断言"由适配器 settings 构建出来的检索服务栈"指向同一个库——
+        这是把修复与真正出问题的那条路径连起来，而不是只测一个构造函数。
+        """
+        from desk.backend import build_adapter
+        from research_agent.writing.collaboration import build_retrieval_services
+
+        adapter = build_adapter(db_path=r"D:\tmp\collab\desk.db")
+        services = build_retrieval_services(adapter.settings)
+        self.assertEqual(str(services.settings.db_path),
+                         str(adapter.db_path),
+                         "补检会把文献写进 services.settings.db_path")
+
+
 class RouteWiringTest(unittest.TestCase):
     """确认新增路由已装配（不依赖 httpx/TestClient）。"""
 
