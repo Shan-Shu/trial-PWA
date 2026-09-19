@@ -12,10 +12,12 @@ from pathlib import Path
 
 from langchain_core.messages import AIMessage
 
+from research_agent.config import Settings
+from research_agent.db import connect
 from research_agent.study.acs_format import build_citation_index
 from research_agent.study.consumer import deterministic_design_context
 from research_agent.study.planner import make_planner_node
-from tests._tmpdir import make_temp_dir  # noqa: F401  （保持与其他测试一致的导入风格）
+from tests._tmpdir import make_temp_dir
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
@@ -49,6 +51,19 @@ class ExamplesImportTest(unittest.TestCase):
 class PlannerFailureSemanticsTest(unittest.TestCase):
     """P1-3：模型输出不可解析必须显式失败，不得伪装成 llm 计划。"""
 
+    def setUp(self) -> None:
+        # 必须给临时库：节点不传 conn/settings 时会回落到**默认库**
+        # data/research_agent.db 并往里写 processing_log——跑一次测试就改了
+        # 用户的正式库（实测每轮 +6 行）。这里与其它测试统一用临时库。
+        self.tmp = make_temp_dir()
+        self.db = Path(self.tmp.name) / "planner.db"
+        self.settings = Settings(db_path=self.db)
+        self.conn = connect(self.db)
+
+    def tearDown(self) -> None:
+        self.conn.close()
+        self.tmp.cleanup()
+
     class _BadModel:
         def invoke(self, messages, **kwargs):
             return AIMessage(content="这不是 JSON，只是解释文字。")
@@ -59,18 +74,21 @@ class PlannerFailureSemanticsTest(unittest.TestCase):
                 {"goal": "g", "task_kind": "summary"}, ensure_ascii=False))
 
     def test_invalid_json_goes_to_planning_failed(self):
-        out = make_planner_node(self._BadModel())({"request": "写一份综述"})
+        out = make_planner_node(self._BadModel(), conn=self.conn,
+                                settings=self.settings)({"request": "写一份综述"})
         self.assertEqual(out["status"], "planning_failed")
         self.assertFalse(out.get("plan"))
         self.assertIn("无法解析", out.get("error") or "")
 
     def test_valid_json_is_marked_llm(self):
-        out = make_planner_node(self._GoodModel())({"request": "写一份综述"})
+        out = make_planner_node(self._GoodModel(), conn=self.conn,
+                                settings=self.settings)({"request": "写一份综述"})
         self.assertEqual(out["status"], "planned")
         self.assertEqual(out["plan"]["planner_mode"], "llm")
 
     def test_no_model_is_marked_offline(self):
-        out = make_planner_node(None)({"request": "写一份综述"})
+        out = make_planner_node(None, conn=self.conn,
+                                settings=self.settings)({"request": "写一份综述"})
         self.assertEqual(out["status"], "planned")
         self.assertEqual(out["plan"]["planner_mode"], "offline_fallback")
 

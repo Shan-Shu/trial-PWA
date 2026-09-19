@@ -140,8 +140,13 @@ def compose_section(db_path: str | Path | None, project_id: int, section_key: st
     try:
         compose_model = None
         compose_reason = ""
+        consumer_model = None
         if use_model:
             compose_model, compose_reason = writing.default_model()
+            # 知识消费节点的模型此前**没有任何调用方传**，消费节点因此永远走
+            # offline_fallback、confidence=0.0，机制状态与算子链退化成纯确定性
+            # 兜底。缺该角色 Key 时保持 None（消费节点自行兜底），不报错。
+            consumer_model, _consumer_reason = writing.default_role_model("consumer")
         else:
             compose_reason = "调用方显式要求不使用模型"
         job_id = sections.start_section_run(
@@ -150,6 +155,7 @@ def compose_section(db_path: str | Path | None, project_id: int, section_key: st
             db_path=path, settings=settings,
             compose_model=compose_model,
             compose_model_reason=compose_reason,
+            consumer_model=consumer_model,
             use_model=use_model,
         )
     except ValueError as exc:

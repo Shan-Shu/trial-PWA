@@ -376,6 +376,9 @@ def _compose_section_entry(**kwargs: Any) -> dict[str, Any]:
         plan=kwargs.get("plan") or {},
         materials=list(kwargs.get("materials") or []),
         sufficiency=kwargs.get("sufficiency") or {},
+        # 消费产物可由调用方经 kwargs 传入（派工方案里带 `knowledge` 时）；
+        # 没有就走"无知识消费产物"的诚实占位，与访谈链路口径一致。
+        knowledge=kwargs.get("knowledge") or {},
         model=model,
         model_reason="" if model else "派工未提供模型",
         words=int(kwargs.get("words") or 0),

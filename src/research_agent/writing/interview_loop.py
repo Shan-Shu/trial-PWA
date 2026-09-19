@@ -27,7 +27,8 @@ from research_agent.logging import bind_trace, log_event
 from research_agent.writing import gap_planner
 from research_agent.writing import interview as iv
 from research_agent.writing.section_judge import judge_section, plan_section_request
-from research_agent.writing.service import default_model, get_project, list_sections
+from research_agent.writing.service import (
+    default_model, default_role_model, get_project, list_sections)
 
 logger = logging.getLogger(__name__)
 
@@ -312,13 +313,24 @@ def _do_write(db: sqlite3.Connection, project_id: int,
     from research_agent.writing.section_service import run_section_workflow
 
     _progress(progress_cb, 30.0, f"正在撰写「{heading}」…")
+    consumer_model: Any = None
     if not use_model:
         # 离线/回归：**绝不构建模型**。早期只判了 compose_model is None，
         # 结果离线时仍然自动构建了真实模型，写作阶段照样发起调用、卡到超时
         # （实测浏览器冒烟等 240s）。use_model 必须能一路管到成段。
         compose_model_reason = compose_model_reason or "调用方显式要求不使用模型（离线）"
-    elif compose_model is None and not compose_model_reason:
-        compose_model, compose_model_reason = default_model()
+    else:
+        if compose_model is None and not compose_model_reason:
+            compose_model, compose_model_reason = default_model()
+        # **知识消费节点的模型必须在这里给上**：接口上一直有 consumer_model，
+        # 但写作台这条路径从不传（只有 dashboard/app.py 的研究链路传），于是消费
+        # 节点永远走 offline_fallback、confidence=0.0 —— 机制状态与候选算子链
+        # 退化成纯确定性兜底，成段时自然写不出机制层面的内容。
+        # 缺该角色 Key 时优雅退回兜底，不报错、不中断写作。
+        consumer_model, _consumer_reason = default_role_model("consumer")
+        if consumer_model is None:
+            logger.info("知识消费模型不可用（将走确定性兜底）: %s",
+                        _consumer_reason)
     result = run_section_workflow(
         project_id=project_id, section_key=key,
         instruction=sec.resolved_focus or sec.custom_text,
@@ -328,6 +340,8 @@ def _do_write(db: sqlite3.Connection, project_id: int,
         planner_model=planner_model,
         compose_model=compose_model,
         compose_model_reason=compose_model_reason,
+        # 知识消费模型（缺 Key 时为 None → 消费节点走确定性兜底）
+        consumer_model=consumer_model,
         progress_cb=progress_cb,
         # 访谈闭环已经判过支撑（sec.verdict）：让执行链只做消费+成段，
         # 不再重复判定、也不再发起第二遍补检（那会把写作拖到数分钟）

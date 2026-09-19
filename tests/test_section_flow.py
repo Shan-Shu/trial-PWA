@@ -23,7 +23,7 @@ from research_agent.ontology.store import init_ontology
 from research_agent.writing import section_service as sections
 from research_agent.writing.section_compose import (
     bind_citations, build_materials, compose_section, parse_citation_indices,
-    render_material_digest)
+    render_knowledge_digest, render_material_digest)
 from research_agent.writing.section_graph import (
     build_section_request, normalize_fallback_plan)
 from research_agent.writing.sufficiency import (
@@ -330,6 +330,82 @@ class TestCompose(SectionBase):
             model=model)
         self.assertEqual(result["invalid_indices"], [7])
 
+    def test_digest_carries_condition_and_measurement_values(self):
+        """素材必须给出条件与测量的**数值**，而不是"N 项条件"这类计数。
+
+        计数让模型无从下笔（"在优化条件下"），是正文空泛的直接原因。
+        """
+        conn = self._conn()
+        try:
+            mats = build_materials(conn, ["p:gold-1"], ["H-0001"], limit=5)
+        finally:
+            conn.close()
+        digest = render_material_digest(mats)
+        self.assertIn("temperature 60 C", digest)
+        self.assertIn("yield 92%", digest)
+        self.assertNotIn("项条件", digest)
+        self.assertNotIn("项测量", digest)
+
+    def test_materials_fall_back_to_evidence_owners(self):
+        """命中文献为 0 时**不能交白卷**：证据编号自带归属文献。
+
+        实测场景：项目主题是中文、库里是英文文献 → `matched_papers=0`，
+        但库里有 200+ 条真超边与其中的条件/测量。此前 `build_materials`
+        见到空的 paper_keys 就直接返回 []，成段既拿不到引文也拿不到数值。
+        """
+        conn = self._conn()
+        try:
+            mats = build_materials(conn, [], ["H-0001", "H-0002"], limit=5)
+        finally:
+            conn.close()
+        self.assertEqual([m["paper_key"] for m in mats],
+                         ["p:gold-1", "p:gold-2"])
+        digest = render_material_digest(mats)
+        self.assertIn("temperature 60 C", digest)
+        self.assertIn("yield 92%", digest)
+
+    def test_knowledge_digest_carries_operator_chain(self):
+        """知识消费产物必须整包可见：机制状态 + 算子链 + 缺口，且带溯源编号。"""
+        digest = render_knowledge_digest({
+            "consumer_analysis": {"summary": "炔酰胺经环化生成吲哚",
+                                  "confidence": 0.7,
+                                  "consumer_mode": "llm"},
+            "design_context": {
+                "mechanism_states": [{"state_id": "MS-0001", "label": "N-Au 活化炔基",
+                                      "hyperedge_ids": ["H-0001"]}],
+                "operator_candidates": [{
+                    "op_id": "OP-0001", "label_zh": "金催化环化",
+                    "operator_chain": [
+                        {"operator": "配位", "input": "炔酰胺", "output": "Au-π 络合物"},
+                        {"operator": "环化", "input": "Au-π 络合物", "output": "吲哚"}],
+                    "hyperedge_ids": ["H-0001"]}],
+                "opportunity_gaps": [{"gap_id": "GAP-0001",
+                                      "missing_link": "缺少对映选择性数据"}],
+            },
+        })
+        self.assertIn("N-Au 活化炔基", digest)
+        self.assertIn("配位[炔酰胺→Au-π 络合物] → 环化[Au-π 络合物→吲哚]", digest)
+        self.assertIn("溯源 H-0001", digest)
+        self.assertIn("缺少对映选择性数据", digest)
+        # 没有溯源编号的条目必须明说"属推断"，不能伪装成有据
+        self.assertIn("属推断", digest)
+
+    def test_compose_prompt_carries_knowledge_block(self):
+        """成段提示词里必须真的带上消费产物——此前 compose 只读判定，整包被丢弃。"""
+        model = _FakeModel("正文 [1]。")
+        compose_section(
+            heading="引言", instruction="gold catalysis",
+            materials=[{"paper_key": "p:gold-1", "title": "T", "evidence": []}],
+            model=model,
+            knowledge={"design_context": {"operator_candidates": [{
+                "op_id": "OP-0001", "label_zh": "金催化环化",
+                "operator_chain": [{"operator": "环化", "input": "A", "output": "B"}],
+                "hyperedge_ids": ["H-0001"]}]}})
+        prompt = model.prompts[0]
+        self.assertIn("金催化环化", prompt)
+        self.assertIn("环化[A→B]", prompt)
+        self.assertIn("溯源 H-0001", prompt)
+
 
 class TestPlanningHelpers(SectionBase):
     def test_section_request_is_compact(self):
@@ -543,6 +619,108 @@ class TestWorkflow(SectionBase):
         self.assertIn("sufficient", decisions, "复审应记录为充足")
         stages = [r["stage"] for r in rounds]
         self.assertGreaterEqual(stages.count("sufficiency"), 1)
+
+    def test_compose_prompt_carries_material_values_and_knowledge(self):
+        """端到端合体回归：成段提示词里必须有**条件/测量的数值**与**消费产物**。
+
+        两个真缺陷都在这一步现形：
+
+        - `build_materials` 只给"N 项条件"这类计数 → 模型无从下笔，只能写
+          "在优化条件下"，正文因此空泛；
+        - `compose_node` 不读 `state["knowledge"]` → 消费节点归纳的机制状态与
+          候选算子链在成段这一步被整体丢弃。
+        """
+        project_id = self._project()
+        key = self._project_section(project_id)
+        model = _FakeModel("金催化 [1]。")
+        result = sections.run_section_workflow(
+            project_id=project_id, section_key=key,
+            instruction="summarise gold catalysed annulation of ynamides",
+            db_path=str(self.db), settings=self.settings,
+            compose_model=model)
+        self.assertEqual(result["status"], "written")
+        prompt = model.prompts[-1]
+        # fixture 里的条件与测量：temperature 60 C / yield 92%
+        self.assertIn("temperature 60 C", prompt)
+        self.assertIn("yield 92%", prompt)
+        self.assertNotIn("项条件", prompt, "不应再给条数，要给数值")
+        # 消费产物必须进提示词（此前整包被丢弃）。fixture 只有 2 条简单超边，
+        # 消费节点会如实返回 needs_collection —— 这条状态本身就要让写作看到。
+        self.assertIn("消费状态", prompt,
+                      "知识消费产物必须进提示词（此前整包被丢弃）")
+
+    def test_write_step_supplies_consumer_model(self):
+        """写作台的写作步骤必须给知识消费节点带上模型。
+
+        `_do_write` 此前只传 planner/compose，消费节点永远走 offline_fallback、
+        confidence=0.0，机制状态与算子链退化成纯确定性兜底。这里用哨兵模型
+        验证它确实被传下去（不依赖环境里是否真的配了 Key）。
+        """
+        from research_agent.writing import interview as iv
+        from research_agent.writing import interview_loop as il
+        from research_agent.writing import section_service as ss
+
+        project_id = self._project()
+        key = self._project_section(project_id)
+        state = iv.InterviewState({
+            "intake": {"genre": "", "topic": "gold catalysis",
+                       "sections": [key]},
+            "sections": {key: {"stage": "drafting", "heading": "本节"}},
+        })
+        sec = state.section(key)
+        conn = self._conn()
+        sentinel = object()
+        captured: dict = {}
+        orig_role = il.default_role_model
+        orig_run = ss.run_section_workflow
+        il.default_role_model = lambda role, settings=None: (sentinel, "")
+        ss.run_section_workflow = lambda **kw: (captured.update(kw)
+                                                or {"status": "failed"})
+        try:
+            il._do_write(conn, project_id, state, sec, {"topic": "gold catalysis"},
+                         "本节", key, None, _FakeModel("x"), "", self.settings,
+                         None, db_path=str(self.db), use_model=True)
+        finally:
+            il.default_role_model = orig_role
+            ss.run_section_workflow = orig_run
+            conn.close()
+        self.assertIs(captured.get("consumer_model"), sentinel,
+                      "consumer_model 必须传到执行链")
+
+    def test_write_step_offline_builds_no_consumer_model(self):
+        """离线（use_model=False）时绝不构建消费模型——回归必须能完全离线跑。"""
+        from research_agent.writing import interview as iv
+        from research_agent.writing import interview_loop as il
+        from research_agent.writing import section_service as ss
+
+        project_id = self._project()
+        key = self._project_section(project_id)
+        state = iv.InterviewState({
+            "intake": {"genre": "", "topic": "gold catalysis",
+                       "sections": [key]},
+            "sections": {key: {"stage": "drafting", "heading": "本节"}},
+        })
+        conn = self._conn()
+        captured: dict = {}
+        built: list = []
+        orig_role = il.default_role_model
+        orig_run = ss.run_section_workflow
+        il.default_role_model = lambda role, settings=None: (
+            built.append(role) or (object(), ""))
+        ss.run_section_workflow = lambda **kw: (captured.update(kw)
+                                                or {"status": "failed"})
+        try:
+            il._do_write(conn, project_id, state, state.section(key),
+                         {"topic": "gold catalysis"}, "本节", key, None, None,
+                         "", self.settings, None, db_path=str(self.db),
+                         use_model=False)
+        finally:
+            il.default_role_model = orig_role
+            ss.run_section_workflow = orig_run
+            conn.close()
+        self.assertEqual(built, [], "离线时不得构建任何角色模型")
+        self.assertIsNone(captured.get("consumer_model"))
+        self.assertIsNone(captured.get("compose_model"))
 
 
 def _services(settings: Settings, collector):

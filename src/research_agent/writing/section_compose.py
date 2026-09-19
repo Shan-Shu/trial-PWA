@@ -21,6 +21,7 @@ logger = logging.getLogger(__name__)
 __all__ = [
     "build_materials",
     "render_material_digest",
+    "render_knowledge_digest",
     "parse_citation_indices",
     "bind_citations",
     "compose_section",
@@ -43,6 +44,107 @@ DIMENSION_GAP_PHRASES = {
 _CITATION_RE = re.compile(r"\[(\d+(?:\s*[,\-–]\s*\d+)*)\]")
 
 
+def _value_text(rec: dict[str, Any]) -> str:
+    """取值：优先 ``value_text``，退回 ``value_num``（去尾零）。"""
+    text = str(rec.get("value") or "").strip()
+    if text:
+        return text
+    num = rec.get("num")
+    if num is None:
+        return ""
+    try:
+        return f"{float(num):g}"
+    except (TypeError, ValueError):
+        return str(num)
+
+
+def _join_units(core: str, unit: str, qualifier: str) -> str:
+    if unit:
+        core = f"{core} {unit}".strip()
+    if qualifier:
+        core = f"{core}（{qualifier}）" if core else qualifier
+    return core
+
+
+def format_condition(rec: dict[str, Any]) -> str:
+    """一条量化条件 → 人话（如 ``温度 ≤ 80 °C``）。
+
+    **这是本轮修复的核心**：此前只把条件的**条数**交给模型（"2 项条件"），
+    模型看不到任何数值，于是正文只能写"在优化条件下"这类空话。
+    """
+    key = str(rec.get("key") or "").strip()
+    operator = str(rec.get("operator") or "").strip()
+    core = " ".join(p for p in (key, operator, _value_text(rec)) if p).strip()
+    return _join_units(core, str(rec.get("unit") or "").strip(),
+                       str(rec.get("qualifier") or "").strip())
+
+
+def format_measurement(rec: dict[str, Any]) -> str:
+    """一条测量 → 人话（如 ``收率 92 %``）。"""
+    metric = str(rec.get("metric") or "").strip()
+    core = " ".join(p for p in (metric, _value_text(rec)) if p).strip()
+    return _join_units(core, str(rec.get("unit") or "").strip(),
+                       str(rec.get("qualifier") or "").strip())
+
+
+def _hyperedge_details(conn: sqlite3.Connection,
+                       hyperedge_id: int) -> tuple[list[str], list[str]]:
+    """取该超边的**条件与测量明细**（不是条数），供正文直接引用。"""
+    conditions: list[str] = []
+    for row in conn.execute(
+        "SELECT condition_key, operator, value_text, value_num, unit, qualifier "
+        "FROM ontology_hyperedge_conditions WHERE hyperedge_id=? "
+        "ORDER BY id LIMIT 12", (int(hyperedge_id),),
+    ).fetchall():
+        text = format_condition({
+            "key": row["condition_key"], "operator": row["operator"],
+            "value": row["value_text"], "num": row["value_num"],
+            "unit": row["unit"], "qualifier": row["qualifier"]})
+        if text:
+            conditions.append(text)
+    measurements: list[str] = []
+    for row in conn.execute(
+        "SELECT metric, value_text, value_num, unit, qualifier "
+        "FROM ontology_hyperedge_measurements WHERE hyperedge_id=? "
+        "ORDER BY id LIMIT 12", (int(hyperedge_id),),
+    ).fetchall():
+        text = format_measurement({
+            "metric": row["metric"], "value": row["value_text"],
+            "num": row["value_num"], "unit": row["unit"],
+            "qualifier": row["qualifier"]})
+        if text:
+            measurements.append(text)
+    return conditions, measurements
+
+
+def _papers_owning_evidence(conn: sqlite3.Connection, evidence: list[str],
+                            limit: int) -> list[str]:
+    """从证据编号回溯出**归属文献**（保序去重）。
+
+    每条超边都带 ``paper_key``，所以"命中文献为 0"并不等于"没有可用素材"。
+    实测：中文主题在英文库里 ``matched_papers=0``，但库里有 233 条真超边，
+    此前 `build_materials` 直接交白卷 —— 成段既拿不到引文，也拿不到我们
+    刚从超边里取出的条件与测量数值。
+    """
+    out: list[str] = []
+    for token in evidence:
+        if not token.startswith("H-"):
+            continue
+        try:
+            hyperedge_id = int(token[2:])
+        except ValueError:
+            continue
+        row = conn.execute(
+            "SELECT paper_key FROM ontology_hyperedges WHERE hyperedge_id = ?",
+            (hyperedge_id,)).fetchone()
+        key = str((row["paper_key"] if row else "") or "")
+        if key and key not in out:
+            out.append(key)
+        if len(out) >= limit:
+            break
+    return out
+
+
 def build_materials(conn: sqlite3.Connection, paper_keys: list[str],
                     evidence_ids: list[str] | None = None,
                     limit: int = 12) -> list[dict[str, Any]]:
@@ -50,8 +152,18 @@ def build_materials(conn: sqlite3.Connection, paper_keys: list[str],
 
     编号即正文可用的引文下标（1 起），因此素材顺序必须稳定——按
     ``paper_key`` 排序，避免同一句话在两次运行里指向不同文献。
+
+    每条证据都带上该超边的**条件与测量明细**（含数值与单位），
+    而不只是条数：正文要能写出"80 °C / 92 % 收率"这种具体内容。
+
+    ``paper_keys`` 为空时**退回由证据编号回溯归属文献**，而不是交白卷：
+    文献匹配失败（如中文主题配英文库）不该把库里已有的超边与数值一并丢掉。
     """
-    keys = [str(k) for k in (paper_keys or []) if k][:max(1, int(limit))]
+    evidence = [str(e) for e in (evidence_ids or [])]
+    cap = max(1, int(limit))
+    keys = [str(k) for k in (paper_keys or []) if k][:cap]
+    if not keys and evidence:
+        keys = _papers_owning_evidence(conn, evidence, cap)
     if not keys:
         return []
     placeholders = ",".join("?" * len(keys))
@@ -64,7 +176,6 @@ def build_materials(conn: sqlite3.Connection, paper_keys: list[str],
     ).fetchall()
     by_key = {r["paper_key"]: dict(r) for r in rows}
 
-    evidence = [str(e) for e in (evidence_ids or [])]
     materials: list[dict[str, Any]] = []
     # 保序：先按命中顺序，缺失的跳过（不塞占位符，否则编号会指向空素材）
     for key in keys:
@@ -79,23 +190,26 @@ def build_materials(conn: sqlite3.Connection, paper_keys: list[str],
                 except ValueError:
                     continue
                 row = conn.execute(
-                    "SELECT h.hyperedge_id, h.label, h.paper_key, "
-                    "       (SELECT COUNT(*) FROM ontology_hyperedge_conditions c "
-                    "        WHERE c.hyperedge_id = h.hyperedge_id) AS conditions, "
-                    "       (SELECT COUNT(*) FROM ontology_hyperedge_measurements m "
-                    "        WHERE m.hyperedge_id = h.hyperedge_id) AS measurements "
-                    "FROM ontology_hyperedges h WHERE h.hyperedge_id = ?",
+                    "SELECT hyperedge_id, label, paper_key "
+                    "FROM ontology_hyperedges WHERE hyperedge_id = ?",
                     (hyperedge_id,),
                 ).fetchone()
                 if row and row["paper_key"] == key:
-                    own_evidence.append(dict(row))
+                    detail = dict(row)
+                    detail["conditions"], detail["measurements"] = \
+                        _hyperedge_details(conn, hyperedge_id)
+                    own_evidence.append(detail)
         item["evidence"] = own_evidence
         materials.append(item)
     return materials
 
 
 def render_material_digest(materials: list[dict[str, Any]]) -> str:
-    """渲染给模型看的素材块；编号与 ``[n]`` 一一对应。"""
+    """渲染给模型看的素材块；编号与 ``[n]`` 一一对应。
+
+    证据行给出**条件与测量的具体数值**，而不是"N 项条件"这类计数——
+    计数让模型无从下笔，只能产出空泛段落（本轮修复的核心问题）。
+    """
     if not materials:
         return "（无可用素材）"
     lines: list[str] = []
@@ -109,15 +223,160 @@ def render_material_digest(materials: list[dict[str, Any]]) -> str:
         if abstract:
             lines.append(f"    摘要：{abstract[:500]}")
         for ev in item.get("evidence") or []:
-            parts = [str(ev.get("label") or f"超边 {ev.get('hyperedge_id')}")]
-            if ev.get("conditions"):
-                parts.append(f"{ev['conditions']} 项条件")
-            if ev.get("measurements"):
-                parts.append(f"{ev['measurements']} 项测量")
-            lines.append(f"    证据 H-{int(ev['hyperedge_id']):04d}：" + "，".join(parts))
+            lines.append(f"    证据 H-{int(ev['hyperedge_id']):04d}："
+                         + str(ev.get("label") or "（无标签）"))
+            conditions = [str(c) for c in (ev.get("conditions") or []) if str(c)]
+            if conditions:
+                lines.append("      条件：" + "；".join(conditions))
+            measurements = [str(m) for m in (ev.get("measurements") or []) if str(m)]
+            if measurements:
+                lines.append("      测量：" + "；".join(measurements))
+            if not conditions and not measurements:
+                lines.append("      （该超边未记录可量化条件或测量）")
     return "\n".join(lines)
 
 
+#: 知识消费产物（`design_context`）里要送进提示词的键与中文标签
+_KNOWLEDGE_SECTIONS: tuple[tuple[str, str], ...] = (
+    ("mechanism_states", "机制状态"),
+    ("reaction_primitives", "反应基元"),
+    ("operator_candidates", "候选算子链"),
+    ("opportunity_gaps", "机会缺口"),
+    ("constraint_conflicts", "约束冲突"),
+)
+
+#: 各小节取"主文本"时的候选字段（结构由模型或确定性兜底产出，可能缺键）
+_KNOWLEDGE_FIELDS: dict[str, tuple[str, ...]] = {
+    "mechanism_states": ("label", "state_id"),
+    "reaction_primitives": ("label_zh", "name", "op_id"),
+    "opportunity_gaps": ("missing_link", "gap_id"),
+    "constraint_conflicts": ("label", "description", "conflict", "missing_link",
+                             "feature", "gap_id"),
+}
+
+#: `consumer_analysis` 里的列表字段 → 中文标签
+_ANALYSIS_LISTS: tuple[tuple[str, str], ...] = (
+    ("mechanism_clusters", "机制簇"),
+    ("known_conflicts", "已知冲突"),
+    ("evidence_gaps", "证据缺口"),
+)
+
+
+def _first_text(item: dict[str, Any], keys: tuple[str, ...]) -> str:
+    for key in keys:
+        value = str(item.get(key) or "").strip()
+        if value:
+            return value
+    return ""
+
+
+def _chain_text(chain: Any) -> str:
+    """算子链 → ``氧化 [A→B] → 环化 [B→C]``。"""
+    parts: list[str] = []
+    for step in (chain or []):
+        if isinstance(step, dict):
+            operator = str(step.get("operator") or step.get("name") or "").strip()
+            src = str(step.get("input") or "").strip()
+            dst = str(step.get("output") or "").strip()
+            text = f"{operator}[{src}→{dst}]" if (src or dst) else operator
+        else:
+            text = str(step).strip()
+        if text:
+            parts.append(text)
+    return " → ".join(parts)
+
+
+def _trace_text(item: dict[str, Any]) -> str:
+    """溯源说明：有编号就列出来，没有就**明说这是推断**（不伪装成有据）。"""
+    ids = [str(x) for x in (item.get("hyperedge_ids") or []) if str(x)][:6]
+    if not ids:
+        ids = [str(x) for x in (item.get("evidence_ids") or []) if str(x)][:6]
+    if ids:
+        return "溯源 " + "、".join(ids)
+    return "无可溯源编号（属推断）"
+
+
+def _render_knowledge_item(section: str, item: dict[str, Any]) -> str:
+    if section == "operator_candidates":
+        name = _first_text(item, ("label_zh", "name", "op_id"))
+        chain = _chain_text(item.get("operator_chain"))
+        text = f"{name}｜{chain}" if (name and chain) else (chain or name)
+    elif section == "reaction_primitives":
+        name = _first_text(item, ("label_zh", "name", "op_id"))
+        src = str(item.get("input_state") or "").strip()
+        dst = str(item.get("output_state") or "").strip()
+        text = f"{name}[{src}→{dst}]" if (name and (src or dst)) else (name or "")
+    else:
+        text = _first_text(item, _KNOWLEDGE_FIELDS.get(section, ("label",)))
+    text = text.strip()
+    if not text:
+        return ""
+    return f"{text}（{_trace_text(item)}）"
+
+
+def render_knowledge_digest(knowledge: dict[str, Any] | None) -> str:
+    """把**知识消费节点的产出**渲染成提示词块。
+
+    这是本轮修复的另一半：``compose_node`` 此前只读充分性判定，消费节点产出的
+    机制状态、候选算子链、机会缺口与约束冲突**全部被丢弃**——写作时自然写不出
+    机制与设计层面的内容，只能复述摘要。这里把它们（连同溯源编号）交回给模型。
+    """
+    if not isinstance(knowledge, dict) or not knowledge:
+        return "（本节没有知识消费产物：机制状态与算子链不可用）"
+    design = knowledge.get("design_context") or {}
+    analysis = knowledge.get("consumer_analysis") or {}
+    lines: list[str] = []
+
+    head: list[str] = []
+    mode = str(analysis.get("consumer_mode") or design.get("mode") or "").strip()
+    if mode:
+        head.append(f"消费模式 {mode}")
+    confidence = analysis.get("confidence")
+    if confidence is not None:
+        head.append(f"置信度 {confidence}")
+    if head:
+        lines.append("· " + "，".join(head))
+
+    summary = str(analysis.get("summary") or "").strip()
+    if summary:
+        lines.append("· 机制综述：" + summary[:400])
+
+    for key, label in _ANALYSIS_LISTS:
+        values = [str(x).strip() for x in (analysis.get(key) or []) if str(x).strip()]
+        if values:
+            lines.append(f"· {label}：" + "；".join(values[:6]))
+
+    for section, label in _KNOWLEDGE_SECTIONS:
+        items = [x for x in (design.get(section) or []) if isinstance(x, dict)]
+        rendered = [text for text in
+                    (_render_knowledge_item(section, x) for x in items[:6]) if text]
+        if not rendered:
+            continue
+        lines.append(f"· {label}（共 {len(items)} 条）：")
+        lines.extend(f"    - {text}" for text in rendered)
+
+    # 消费节点**没找到机制证据时会提前返回**（不产出 design_context），只带
+    # status 与 retrieval_request。这条信息对写作至关重要——它解释了为什么
+    # 写不出机制层面的内容、以及缺的是什么，不能当成"没有产物"丢掉。
+    status = str(knowledge.get("consumer_status")
+                 or knowledge.get("status") or "").strip()
+    if status:
+        lines.insert(0, f"· 消费状态 {status}")
+    counts = [f"{label} {len(value)}" for key, label in
+              (("patterns", "模式"), ("hyperedges", "超边"),
+               ("evidence", "证据句"))
+              if isinstance((value := knowledge.get(key)), list)]
+    if counts:
+        lines.append("· 库内可用：" + "，".join(counts))
+    request = knowledge.get("retrieval_request")
+    if isinstance(request, dict):
+        reason = str(request.get("reason") or "").strip()
+        if reason:
+            lines.append("· 消费节点要求补检：" + reason[:200])
+
+    if not lines:
+        return "（本节没有知识消费产物：机制状态与算子链不可用）"
+    return "\n".join(lines)
 def parse_citation_indices(text: str) -> list[int]:
     """抽出正文用到的所有引文编号（去重、升序，区间 ``[5-7]`` 展开为 5,6,7）。"""
     out: set[int] = set()
@@ -208,7 +467,8 @@ def with_gap_notice(content: str, unmet_dimensions: list[str],
 
 
 def _skeleton(heading: str, instruction: str, reason: str,
-              materials: list[dict[str, Any]]) -> str:
+              materials: list[dict[str, Any]],
+              knowledge: dict[str, Any] | None = None) -> str:
     lines = [
         f"## {heading}",
         "",
@@ -217,6 +477,11 @@ def _skeleton(heading: str, instruction: str, reason: str,
     ]
     if instruction:
         lines.extend(["", "结构化输入：", instruction])
+    # 知识消费产物也要进骨架：它本身就来自确定性兜底（机制状态/算子链），
+    # 离线时正是最该被用户看到的"能写成什么"的依据。此前被整体丢弃。
+    digest = render_knowledge_digest(knowledge)
+    if "没有知识消费产物" not in digest:
+        lines.extend(["", "知识消费产物：", digest])
     lines.extend(["", "可用素材：", render_material_digest(materials)])
     return "\n".join(lines)
 
@@ -254,11 +519,16 @@ def compose_section(
     unmet_dimensions: list[str] | None = None,
     evidence_types: list[str] | None = None,
     role: str = "",
+    knowledge: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """为单个部分生成正文（或显式骨架草稿）。
 
     ``fields_block`` 是模板渲染出的**结构化字段块**（每项都标了来源：
     用户指定 / 规划拟定 / 模板默认），替代原来那条自由文本指令。
+
+    ``knowledge`` 是知识消费节点的产出（``state["knowledge"]``：``consumer_analysis``
+    + ``design_context``）。此前成段节点**从不接收它**，机制状态与候选算子链在
+    成段这一步被整体丢弃，正文因此只能复述摘要。
 
     返回 ``{content, generated_by, citations, bindings, invalid_indices,
     material_count, model_error, gap_notice}``；**不落库**——落库由
@@ -273,12 +543,13 @@ def compose_section(
     target_words = int(words or 0) or 600
     model_error: str | None = None
     generated_by = "llm"
+    knowledge_digest = render_knowledge_digest(knowledge)
 
     if model is None:
         model_error = model_reason or "未提供模型"
         generated_by = "skeleton_fallback"
         content = _skeleton(heading, fields_block or instruction, model_error,
-                            materials)
+                            materials, knowledge)
     else:
         try:
             from langchain_core.messages import HumanMessage
@@ -298,6 +569,8 @@ def compose_section(
                     "目标字数：{words}\n\n"
                     "可用素材（引文编号即方括号数字，**只能引用下列编号**）：\n"
                     "{materials}\n\n"
+                    "知识消费节点产出（机制状态 / 算子链 / 缺口，带溯源编号）：\n"
+                    "{knowledge}\n\n"
                     "充分性判定依据：{basis}\n\n"
                     "允许带缺口的写作说明：{gap_hint}\n\n"
                     "请只输出本节正文（Markdown，不要重复标题），"
@@ -318,10 +591,17 @@ def compose_section(
                 "instruction": fields_block or instruction or "（无额外指令）",
                 "words": target_words,
                 "materials": render_material_digest(materials),
+                "knowledge": knowledge_digest,
                 "basis": "；".join(str(r) for r in (sufficiency.get("reasons") or [])[:4])
                          or "无",
                 "gap_hint": gap_hint,
             })
+            # 用户/旧 pack 的模板可能没有 `{knowledge}` 占位符。此时**追加**而不是
+            # 静默丢失——否则换了包就等于把知识消费产物再次丢回垃圾桶。
+            if "{knowledge}" not in template:
+                prompt += ("\n\n知识消费节点产出（机制状态 / 算子链 / 缺口，"
+                           "带溯源编号，**写作时要转写进正文**）：\n"
+                           + knowledge_digest)
             from research_agent.logging import logged_invoke
             msg = logged_invoke(model, prompt, node="content_builder",
                                 role="content")
@@ -333,7 +613,7 @@ def compose_section(
             model_error = f"{type(exc).__name__}: {exc}"
             generated_by = "skeleton_fallback"
             content = _skeleton(heading, fields_block or instruction, model_error,
-                                materials)
+                                materials, knowledge)
 
     # 带缺口写作时，**在正文最前面显式标注**（用户要求：可以写，但必须标出来）
     gap_notice = ""

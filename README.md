@@ -50,17 +50,24 @@ uv run research-desk-api --port 8000
 四层回归，全部可离线复跑（`RA_DESK_OFFLINE=1` 时不调模型，也不烧配额）：
 
 ```powershell
-uv run python -m unittest discover -s tests         # 引擎单测（411 项）
+uv run python scripts/run_tests.py                    # 引擎单测（418 项，自带"真实库未被写入"对账）
 uv run python scripts/smoke_desk.py --db data\desk.db   # 10 页逐页渲染不报错
 uv run python scripts/smoke_desk_writing.py         # 写作台访谈闭环 → 正文落库
 uv run python scripts/smoke_desk_dispatch.py        # 自然语言 → 规划节点 → 分发执行
 ```
+
+- **单测请用 `scripts/run_tests.py`**：它把 `RA_DB_PATH` 指向临时文件，并在跑完后对账
+  真实库快照。直接 `python -m unittest discover -s tests` 曾会让少数用例把
+  `processing_log` 写进默认库 `data/research_agent.db`（一轮 20 行）——调用点已修，
+  这个运行器是防它再犯的那道网。
 
 - `smoke_desk.py` 用 `streamlit.testing.v1.AppTest` 在进程内真跑页面。**HTTP GET 证明不了界面正常**——
   Streamlit 页面在 WebSocket 会话里执行，普通请求只拿到空壳 HTML。
 - `smoke_desk_dispatch.py` 会**整库复制**一份到 `data/dispatch_smoke.db` 再派工，正式库只读；
   它同时守住"对 A 库下单却写进 B 库"和"离线仍真调模型"这两个真踩过的坑。
 - 看真实库数据（不是"能渲染"，而是"有数据"）：`uv run python scripts/show_desk_data.py`。
+- 看成段**到底拿到了什么**（材料里的真实数值 + 知识消费产物；整库复制、不调模型、不花配额）：
+  `uv run python scripts/show_compose_prompt.py`。
 
 ## 目录
 

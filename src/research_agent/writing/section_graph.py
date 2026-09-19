@@ -280,12 +280,23 @@ def build_section_graph(
             if own_conn and db is not None:
                 db.close()
 
+        # 知识消费节点的产出（`consumer_analysis` + `design_context`）。
+        # **必须在这里接上**：此前 compose_node 只读充分性判定，消费节点
+        # 归纳出的机制状态与候选算子链在成段这一步被整体丢弃，正文自然
+        # 写不出机制与设计层面的内容。
+        #
+        # 注意消费节点的状态（`consumed` / `needs_collection` / `consumer_failed`）
+        # 是写在 **state 顶层**而不是 bundle 里的，这里显式捎进产物——它说明了
+        # 机制证据到底可不可用，写作时必须看得到。
+        knowledge = dict(state.get("knowledge") or {})
+        knowledge.setdefault("consumer_status", str(state.get("status") or ""))
         section = compose_section(
             heading=str(state.get("heading") or ""),
             instruction=str(state.get("instruction") or ""),
             plan=state.get("plan") or {},
             materials=materials,
             sufficiency=verdict,
+            knowledge=knowledge,
             model=compose_model,
             model_reason=compose_model_reason,
             section_note=str(state.get("section_note") or ""),

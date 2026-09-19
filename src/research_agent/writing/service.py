@@ -449,10 +449,22 @@ def default_model(settings: Settings | None = None) -> tuple[Any, str]:
     之所以返回原因：界面上的"未提供模型"原本把**未配置 Key**与**构建失败**
     合并成同一句话，用户无法据此判断该去配 Key 还是该去查依赖。
     """
+    return default_role_model("content", settings)
+
+
+def default_role_model(role: str,
+                       settings: Settings | None = None) -> tuple[Any, str]:
+    """按**节点角色**构建模型，返回 ``(model, reason)``（失败时 model 为 None）。
+
+    与 :func:`default_model` 同一约定。存在的理由：写作链上不止"成段"一个角色，
+    知识消费节点也需要模型；此前接口上有 ``consumer_model`` 参数，但**所有写作
+    路径都不传**（只有 ``dashboard/app.py`` 传），消费节点于是永远走
+    ``offline_fallback``、``confidence=0.0``，机制状态与算子链退化成纯确定性兜底。
+    """
     from research_agent.models import build_role_model
     try:
-        return build_role_model("content"), ""
+        return build_role_model(role), ""
     except Exception as exc:  # noqa: BLE001 —— 缺 Key 是预期情况
         reason = f"{type(exc).__name__}: {exc}"
-        logger.info("写作模型不可用（将使用骨架草稿）: %s", reason)
+        logger.info("角色 %s 的模型不可用: %s", role, reason)
         return None, reason

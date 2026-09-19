@@ -115,7 +115,8 @@ class TopicRelevanceGateTest(unittest.TestCase):
                 }
                 consumed = make_knowledge_consumer_node(
                     conn=conn, settings=Settings(db_path=db))({"plan": plan})
-                drafted = make_content_node(None)(consumed)
+                drafted = make_content_node(
+                    None, conn=conn, settings=Settings(db_path=db))(consumed)
                 self.assertEqual(drafted["status"], "drafted")
             finally:
                 conn.close()
@@ -159,15 +160,18 @@ class RetrievalSkillsControlTest(unittest.TestCase):
             ],
             "evidence": [],
         }
-        node = make_content_node(None)
-        out = node({
-            "plan": {
-                "goal": "test",
-                "mission": {"seed_terms": ["CPC"]},
-                "retrieval": {"min_support_target": 2},
-            },
-            "knowledge": knowledge,
-        })
+        # 必须给临时库：不传 conn/settings 时节点会回落到**默认库**并往里写日志
+        with make_temp_dir() as tmp:
+            node = make_content_node(
+                None, settings=Settings(db_path=Path(tmp.name) / "content.db"))
+            out = node({
+                "plan": {
+                    "goal": "test",
+                    "mission": {"seed_terms": ["CPC"]},
+                    "retrieval": {"min_support_target": 2},
+                },
+                "knowledge": knowledge,
+            })
         ids = [g["pattern_id"] for g in out["edge_gaps"]]
         self.assertEqual(ids, ["P-0001"])
 

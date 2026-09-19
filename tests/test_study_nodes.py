@@ -110,7 +110,8 @@ class StudyNodesTest(unittest.TestCase):
                     "constraints": [],
                 }, ensure_ascii=False))
 
-        node = make_planner_node(FakePlanner())
+        node = make_planner_node(FakePlanner(), conn=self.conn,
+                                 settings=self.settings)
         out = node({"request": request})
         self.assertEqual(out["status"], "planned")
         self.assertEqual(out["plan"]["content_type"], "frontier_review")
@@ -147,11 +148,13 @@ class StudyNodesTest(unittest.TestCase):
         consumer = make_knowledge_consumer_node(
             conn=self.conn, settings=self.settings)
         consumed = consumer({"plan": plan})
-        content = make_content_node(None)
+        content = make_content_node(None, conn=self.conn,
+                                    settings=self.settings)
         drafted = content(consumed)
         self.assertEqual(drafted["status"], "drafted")
         self.assertIn("RAG", drafted["draft"]["markdown"])
-        review = make_review_node(None)({
+        review = make_review_node(None, conn=self.conn,
+                                  settings=self.settings)({
             **drafted,
             "plan": plan,
             "knowledge": consumed["knowledge"],
@@ -365,14 +368,16 @@ class StudyLlmParsingTest(unittest.TestCase):
                         }],
                     }, ensure_ascii=False))
 
-            drafted = make_content_node(FakeContent())(
+            drafted = make_content_node(FakeContent(), conn=conn,
+                                        settings=self.settings)(
                 {"plan": {
                     "goal": "RAG 前沿",
                     "domain": "RAG",
                     "content_type": "frontier_review",
                     "mission": {"seed_terms": ["RAG"]},
                 }, "knowledge": knowledge})
-            review = make_review_node(None)({
+            review = make_review_node(None, conn=conn,
+                                      settings=self.settings)({
                 **drafted,
                 "plan": {
                     "goal": "RAG 前沿",
