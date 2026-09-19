@@ -1,7 +1,15 @@
 """确认界面显示的是**真实数据**——"能渲染"与"有数据"是两回事。"""
+import sys
 from pathlib import Path
 
 from streamlit.testing.v1 import AppTest
+
+# 同两个冒烟脚本：stdout 走管道时用系统 ANSI 码页（cp936），中文指标名会乱码。
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, ValueError):
+        pass
 
 script = Path("src/desk/ui/app.py").resolve()
 at = AppTest.from_file(str(script), default_timeout=120)

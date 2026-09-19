@@ -153,10 +153,17 @@ def run_dispatch(
     trace: str = "",
     settings: Any = None,
     task_kwargs: dict[str, Any] | None = None,
+    model_available: bool | None = None,
 ) -> dict[str, Any]:
     """执行一张派工单，返回 `dispatch` 记录（含逐步报告）。
 
     ``task_kwargs`` 是给所有任务共享的公共参数（如 `settings`、`model`）。
+
+    ``model_available=False`` 表示**本次派工没有可用模型**（如界面离线模式）：
+    登记表里 ``needs_model`` 的步骤会被如实跳过，而不是去真调模型。这个开关
+    是必要的——``model_missing_behavior`` 此前**只被声明、没有任何地方读取**，
+    于是离线跑 ``extract_knowledge`` 仍会真调模型并发起外部检索（实测：一次
+    离线回归打出了 arXiv / Semantic Scholar / OpenAlex 请求并撞上 600s 超时）。
     """
     s = settings or default_settings
     own_conn = conn is None
@@ -215,7 +222,8 @@ def run_dispatch(
                     ctx.step = index
                     step = _run_step(db, index, item, results,
                                      step_kwargs, dispatch_id,
-                                     section_key, s)
+                                     section_key, s,
+                                     model_available=model_available)
                     steps.append(step)
                     results.append(step.get("produced") or {})
                     added_total += int(step.get("added") or 0)
@@ -267,7 +275,8 @@ class _NullCtx:
 def _run_step(db: sqlite3.Connection, index: int, item: dict[str, Any],
               results: list[dict[str, Any]], base_kwargs: dict[str, Any],
               dispatch_id: str, section_key: str,
-              settings: Any) -> dict[str, Any]:
+              settings: Any, *, model_available: bool | None = None,
+              ) -> dict[str, Any]:
     """执行一步：解析引用 → 查取消 → 执行 → 回收回报。"""
     task = str(item.get("task") or "")
     node = str(item.get("node") or "")
@@ -299,6 +308,21 @@ def _run_step(db: sqlite3.Connection, index: int, item: dict[str, Any],
         return {"index": index, "task": task, "node": node,
                 "status": "skipped", "skip_reason": f"任务尚未实现: {task}",
                 "seconds": 0.0}
+
+    # 没有可用模型时，**登记表里声明"缺模型即不可用"的步骤**如实跳过。
+    #
+    # 只跳 `unavailable`，不跳 `fallback`：后者（拟方案、成段、检索）自带离线
+    # 兜底路径，离线跑它们是设计内的行为；前者（知识抽取等）没有模型就没法干，
+    # 硬跑只会真调模型 + 发起外部检索/下载 PDF。
+    if model_available is False and bool(getattr(spec, "needs_model", False)) \
+            and str(getattr(spec, "model_missing_behavior", "") or "") \
+            == "unavailable":
+        step = {"index": index, "task": task, "node": node,
+                "status": "skipped", "seconds": 0.0,
+                "skip_reason": "未绑定模型（离线模式），本步不可用"}
+        log_event("dispatch.step.skipped", node=node, dispatch=dispatch_id,
+                  db=db, data=step)
+        return step
 
     try:
         args = _resolve_args(item.get("args") or {}, results)

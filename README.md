@@ -45,6 +45,23 @@ uv run research-desk
 uv run research-desk-api --port 8000
 ```
 
+## 怎么验证
+
+四层回归，全部可离线复跑（`RA_DESK_OFFLINE=1` 时不调模型，也不烧配额）：
+
+```powershell
+uv run python -m unittest discover -s tests         # 引擎单测（411 项）
+uv run python scripts/smoke_desk.py --db data\desk.db   # 10 页逐页渲染不报错
+uv run python scripts/smoke_desk_writing.py         # 写作台访谈闭环 → 正文落库
+uv run python scripts/smoke_desk_dispatch.py        # 自然语言 → 规划节点 → 分发执行
+```
+
+- `smoke_desk.py` 用 `streamlit.testing.v1.AppTest` 在进程内真跑页面。**HTTP GET 证明不了界面正常**——
+  Streamlit 页面在 WebSocket 会话里执行，普通请求只拿到空壳 HTML。
+- `smoke_desk_dispatch.py` 会**整库复制**一份到 `data/dispatch_smoke.db` 再派工，正式库只读；
+  它同时守住"对 A 库下单却写进 B 库"和"离线仍真调模型"这两个真踩过的坑。
+- 看真实库数据（不是"能渲染"，而是"有数据"）：`uv run python scripts/show_desk_data.py`。
+
 ## 目录
 
 ```

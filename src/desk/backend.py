@@ -1003,7 +1003,7 @@ class BackendAdapter:
                                section_key: str = "", topic: str = "",
                                heading: str = "",
                                verdict: dict[str, Any] | None = None,
-                               use_model: bool = True) -> dict[str, Any]:
+                               use_model: bool | None = None) -> dict[str, Any]:
         """自然语言需求 → 3 个可直接派工的方案（**只解析，不执行**）。
 
         这是"直接向工作规划节点发需求"的入口：规划节点把用户的话翻译成
@@ -1015,7 +1015,7 @@ class BackendAdapter:
             request=str(request or ""), db_path=self.db_path,
             project_id=int(project_id or 0), section_key=section_key,
             topic=topic, heading=heading, verdict=verdict or {},
-            use_model=bool(use_model), settings=self.settings)
+            use_model=self._use_model(use_model), settings=self.settings)
 
     def create_dispatch(self, plan: list[dict[str, Any]], *,
                         project_id: Any = 0, section_key: str = "",
@@ -1032,7 +1032,11 @@ class BackendAdapter:
                 plan=list(plan or []), conn=conn,
                 project_id=int(project_id or 0), section_key=section_key,
                 origin=origin, reason=reason, budget=budget or {},
-                settings=self.settings, cancel_event=cancel_event)
+                settings=self.settings, cancel_event=cancel_event,
+                # 离线时必须也告诉执行器：否则界面不调模型、派工却照调，
+                # 既烧配额又让离线回归不可复现（曾打出 arXiv/OpenAlex 请求
+                # 并撞上 600s 超时）。
+                model_available=self._use_model(None))
         finally:
             conn.close()
 
