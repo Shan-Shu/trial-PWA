@@ -153,6 +153,38 @@ def main() -> int:
             rows = -1
         check(rows == 3, "概况表列出全部 3 个项目", f"{rows} 行")
 
+    # ①-b 导航：列表页 →（打开）→ 项目详情页 →（返回）→ 列表页
+    #
+    # 这一段是回归"用户找不到进入项目具体页面的入口"。此前写作台只有一页，
+    # 项目是在折叠区里用下拉**隐式**选中的：既没有入口，也没有抬头说明你在
+    # 哪个项目里；选中后自动推进一起作业，页面主体还会被进度条顶掉。
+    check(at.session_state.get("desk_view") == "list", "进入写作台默认是项目列表页",
+          f"view={at.session_state.get('desk_view')}")
+    open_buttons = [b for b in at.button if str(b.key).startswith("desk_open_")]
+    check(len(open_buttons) == 3, "列表页每个项目都有一个「打开」入口",
+          f"{len(open_buttons)} 个")
+    keeper_btn = next((b for b in open_buttons
+                       if b.key == f"desk_open_{ids['keeper']}"), None)
+    check(keeper_btn is not None, "有正文项目的「打开」按钮存在")
+    if keeper_btn is not None:
+        keeper_btn.click().run()
+        check(at.session_state.get("desk_view") == "detail",
+              "点「打开」进入项目详情页",
+              f"view={at.session_state.get('desk_view')}")
+        header = " ".join(str(m.value) for m in at.markdown)
+        check(f"#{ids['keeper']} · 有正文的稿子" in header,
+              "详情页抬头写明当前是哪个项目")
+        check(any(b.key == "desk_back_to_list" for b in at.button),
+              "详情页有「← 全部项目」返回入口")
+        check(bool(at.chat_message) or bool(at.expander)
+              or any("规划节点" in str(m.value) for m in at.markdown),
+              "详情页渲染出项目内容（不再只剩进度条）",
+              f"chat_message {len(at.chat_message)} 条")
+        back = next((b for b in at.button if b.key == "desk_back_to_list"), None)
+        if back is not None:
+            back.click().run()
+        check(at.session_state.get("desk_view") == "list", "「← 全部项目」回到列表页")
+
     # ② 重命名：把「测试残留A」改掉，并到库里对账
     picks = [w for w in at.selectbox if w.key == "desk_pm_rename_pick"]
     check(bool(picks), "管理区渲染出「要改的项目」选择框")

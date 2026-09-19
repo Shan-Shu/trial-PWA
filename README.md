@@ -66,8 +66,8 @@ uv run python scripts/smoke_desk_dispatch.py        # 自然语言 → 规划节
   Streamlit 页面在 WebSocket 会话里执行，普通请求只拿到空壳 HTML。
 - `smoke_desk_dispatch.py` 会**整库复制**一份到 `data/dispatch_smoke.db` 再派工，正式库只读；
   它同时守住"对 A 库下单却写进 B 库"和"离线仍真调模型"这两个真踩过的坑。
-- `smoke_desk_projects.py` 真点「重命名」与「批量删除」，并在临时库上对账数据库结果
-  （含**无外键的 `dispatch_runs` 孤儿**必须被一并清掉）。
+- `smoke_desk_projects.py` 真点「打开 / 返回」导航、「重命名」与「批量删除」，并在临时库上
+  对账数据库结果（含**无外键的 `dispatch_runs` 孤儿**必须被一并清掉）。
 - 看真实库数据（不是"能渲染"，而是"有数据"）：`uv run python scripts/show_desk_data.py`。
 - 看成段**到底拿到了什么**（材料里的真实数值 + 知识消费产物；整库复制、不调模型、不花配额）：
   `uv run python scripts/show_compose_prompt.py`。

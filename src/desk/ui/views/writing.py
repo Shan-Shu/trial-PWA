@@ -47,25 +47,124 @@ _MAX_STALL = 3
 # ====================================================================== 入口
 def render(ctx) -> None:
     st.subheader("写作台")
-    st.caption("整篇由一个**工作规划节点**通过一轮问答定下来：先定体裁与要写的部分，"
-               "再逐部分拟 3 个方案；选定后先判定支撑——不够就问你怎么处理。"
-               "写作由知识消费与内容形成节点完成。")
 
-    project = _pick_project(ctx)
-    # 管理区**先于提前返回**渲染：选中态失效（项目刚被删）时，用户正是在这里清理
+    # 两页结构：**项目列表页 → 项目详情页**。
+    #
+    # 此前只有一页，且"选中项目"是在折叠区里用一个下拉**隐式**完成的：用户既
+    # 看不到进入某个项目的入口，也看不出当前在哪个项目里；更糟的是选中后
+    # `_advance` 会立刻自动起作业并 return，页面主体被进度条顶掉——实测真实库上
+    # 渲染出来只有「两个折叠区 + 0% 排队中」，对话/部分/指令区一片空白。
+    pid = st.session_state.get("desk_pid")
+    view = st.session_state.get("desk_view") or ("detail" if pid else "list")
+    if view == "detail" and not pid:
+        view = "list"
+    st.session_state["desk_view"] = view
+
+    if view == "list":
+        _render_project_list(ctx)
+    else:
+        _render_project_detail(ctx, pid)
+
+
+def _enter(pid: Any) -> None:
+    """进入某个项目的详情页。"""
+    st.session_state["desk_pid"] = pid
+    st.session_state["desk_view"] = "detail"
+    st.rerun()
+
+
+def _back_to_list() -> None:
+    st.session_state["desk_view"] = "list"
+    st.rerun()
+
+
+# ================================================================ 项目列表页
+def _render_project_list(ctx) -> None:
+    st.caption("整篇由一个**工作规划节点**通过一轮问答定下来：先定体裁与要写的"
+               "部分，再逐部分拟 3 个方案；选定后先判定支撑——不够就问你怎么处理。"
+               "点某个项目的「打开」进入它的写作页。")
+    projects = ctx.service.list_writing_projects()
+
+    if not projects:
+        st.info("还没有写作项目。在下面建一个即可开始。")
+    else:
+        st.markdown(f"##### 项目列表（{len(projects)} 个）")
+        head = st.columns([4, 2, 1, 2, 1])
+        for col, text in zip(head, ("标题 / 主题", "体裁", "已写/总节",
+                                    "更新时间", "")):
+            col.caption(f"**{text}**")
+        for project in projects:
+            title_col, genre_col, prog_col, time_col, act_col = st.columns(
+                [4, 2, 1, 2, 1])
+            title_col.markdown(
+                f"**#{project['id']} · {project['title'] or '（无标题）'}**")
+            topic = str(project.get("topic") or "").strip()
+            if topic:
+                title_col.caption(topic[:44])
+            genre_col.caption(project.get("genre") or "—")
+            filled = int(project.get("filled_sections") or 0)
+            total = int(project.get("total_sections") or 0)
+            prog_col.caption(f"{filled}/{total}")
+            time_col.caption(str(project.get("updated_at")
+                                 or project.get("created_at") or "")[:19])
+            if act_col.button("打开", key=f"desk_open_{project['id']}"):
+                _enter(project["id"])
+
+    st.divider()
+    st.markdown("##### 新建写作项目")
+    c1, c2 = st.columns(2)
+    title = c1.text_input("新项目标题", key="desk_new_title")
+    topic = c2.text_input("研究主题", key="desk_new_topic")
+    if st.button("创建并开始访谈", key="desk_create"):
+        if not title.strip():
+            st.warning("标题不能为空")
+        else:
+            new_id = ctx.service.create_writing_project(title.strip(),
+                                                        topic.strip())
+            ctx.service.interview_start(new_id)
+            _enter(new_id)
+
+    st.divider()
     _project_manager(ctx)
-    if not project:
+
+
+# ================================================================ 项目详情页
+def _render_project_detail(ctx, pid: Any) -> None:
+    projects = ctx.service.list_writing_projects()
+    project = next((p for p in projects if p["id"] == pid), None)
+    if project is None:
+        # 项目刚被删掉（可能在管理区删的）：回列表，别停在一个空壳上
+        st.warning("这个项目已不存在（可能刚被删除），已回到项目列表。")
+        st.session_state.pop("desk_pid", None)
+        _back_to_list()
         return
-    pid = project["id"]
+
+    if st.button("← 全部项目", key="desk_back_to_list"):
+        _back_to_list()
+
+    # **抬头必须有**：任何时候都要能看出"我在哪个项目里"。以前没有这一行，
+    # 自动推进时页面只剩一个进度条，看起来就像项目页消失了。
+    filled = int(project.get("filled_sections") or 0)
+    total = int(project.get("total_sections") or 0)
+    st.markdown(f"#### #{project['id']} · {project['title'] or '（无标题）'}")
+    st.caption(f"体裁 {project.get('genre') or '—'}"
+               f" · 主题 {project.get('topic') or '（未填）'}"
+               f" · 已写 {filled}/{total} 节"
+               f" · 更新 {str(project.get('updated_at') or project.get('created_at') or '')[:19]}")
 
     snap = ctx.service.interview_snapshot(pid)
     if not snap.get("ok"):
         st.error(f"访谈状态读取失败：{snap.get('error') or '未知原因'}")
         return
 
-    # 有未完成的步骤就自动推进（作业驱动）；这一步可能只渲染进度
-    if _advance(ctx, pid, snap):
-        return
+    # 有未完成的步骤就自动推进（作业驱动）。
+    #
+    # **但不因此把详情页整块顶掉**：以前这里是 `return`，于是"进入项目"看到的
+    # 只有进度条，对话/部分/指令区一片空白——看起来就像项目页消失了。
+    # 现在进度与内容并存：推进时多一行说明，下面的内容照常可看。
+    advancing = _advance(ctx, pid, snap)
+    if advancing:
+        st.caption("这一步正在推进，完成后会自动刷新；下面的内容照常可以查看。")
 
     left, right = st.columns([3, 2])
     with left:
@@ -73,41 +172,6 @@ def render(ctx) -> None:
     with right:
         _sections(ctx, pid, snap)
         _directive(ctx, pid, snap)
-
-
-# ====================================================================== 项目
-def _pick_project(ctx) -> dict[str, Any] | None:
-    projects = ctx.service.list_writing_projects()
-    with st.expander("选择 / 新建写作项目", expanded=not projects):
-        if projects:
-            labels = {f"#{p['id']} · {p['title']}": p for p in projects}
-            picked = st.selectbox("已有项目", list(labels),
-                                  key="desk_project_pick")
-            chosen = labels[picked]
-            st.session_state["desk_pid"] = chosen["id"]
-        c1, c2 = st.columns(2)
-        title = c1.text_input("新项目标题", key="desk_new_title")
-        topic = c2.text_input("研究主题", key="desk_new_topic")
-        if st.button("创建并开始访谈", key="desk_create"):
-            if not title.strip():
-                st.warning("标题不能为空")
-            else:
-                new_id = ctx.service.create_writing_project(title.strip(),
-                                                            topic.strip())
-                st.session_state["desk_pid"] = new_id
-                ctx.service.interview_start(new_id)
-                st.rerun()
-
-    pid = st.session_state.get("desk_pid")
-    if not pid:
-        st.info("先选择或新建一个写作项目。")
-        return None
-    for project in projects:
-        if project["id"] == pid:
-            return project
-    st.warning("选中的项目已不存在，请重新选择。")
-    st.session_state.pop("desk_pid", None)
-    return None
 
 
 # ================================================================== 项目管理
@@ -219,10 +283,11 @@ def _project_manager(ctx) -> None:
                 f"派工单 {removed.get('dispatches', 0)} 条。")
             if result.get("missing"):
                 st.info(f"另有 {len(result['missing'])} 个 id 已不存在，跳过。")
-            # 选中的项目可能已被删掉：清掉选中态，否则下一轮会指向已删的 id
+            # 删掉的正好是当前打开的项目：清掉选中态并回列表，否则详情页会
+            # 指向一个已不存在的 id（或者停在空壳上）
             if st.session_state.get("desk_pid") in set(chosen_ids):
                 st.session_state.pop("desk_pid", None)
-            st.session_state.pop("desk_project_pick", None)
+                st.session_state["desk_view"] = "list"
             st.session_state.pop("desk_pm_victims", None)
             st.rerun()
 
