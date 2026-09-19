@@ -69,6 +69,9 @@ uv run python scripts/smoke_desk_dispatch.py        # 自然语言 → 规划节
 - `smoke_desk_projects.py` 真点「打开 / 返回」导航、「重命名」与「批量删除」，并在临时库上
   对账数据库结果（含**无外键的 `dispatch_runs` 孤儿**必须被一并清掉）。
 - 看真实库数据（不是"能渲染"，而是"有数据"）：`uv run python scripts/show_desk_data.py`。
+- 界面卡死或怀疑有残留实例占着后台跑：
+  `uv run python scripts/kill_strays.py --dry-run` 只列出，去掉 `--dry-run` 即结束它们
+  （`停止助手.bat` 已内置这一步；它按命令行特征查找，因此**不依赖端口**，卡死的实例也能清掉）。
 - 看成段**到底拿到了什么**（材料里的真实数值 + 知识消费产物；整库复制、不调模型、不花配额）：
   `uv run python scripts/show_compose_prompt.py`。
 
