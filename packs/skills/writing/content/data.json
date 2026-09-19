@@ -1,0 +1,605 @@
+{
+  "name": "writing",
+  "description": "论文写作体裁、章节骨架与提示词模板。合并自 paper_writing_assistant 的 writing/writer.py（其 DEFAULT_OUTLINE 硬编码 7 个中文小节），改为数据驱动：新增体裁或改语言只需改本文件。",
+  "default_genre": "research_article",
+  "genres": {
+    "research_article": {
+      "label": "研究论文",
+      "language": "zh",
+      "sections": [
+        {
+          "key": "abstract",
+          "heading": "摘要",
+          "words": 300
+        },
+        {
+          "key": "introduction",
+          "heading": "引言",
+          "words": 1200
+        },
+        {
+          "key": "methods",
+          "heading": "方法",
+          "words": 1500
+        },
+        {
+          "key": "results",
+          "heading": "结果",
+          "words": 1200
+        },
+        {
+          "key": "discussion",
+          "heading": "讨论",
+          "words": 1200
+        },
+        {
+          "key": "conclusion",
+          "heading": "结论",
+          "words": 400
+        },
+        {
+          "key": "references",
+          "heading": "参考文献",
+          "words": 0
+        }
+      ],
+      "section_notes": {
+        "introduction": "交代领域现状、已有工作缺口与本工作的定位，不堆砌文献。",
+        "methods": "给出可复现的实验/计算流程，标注条件与来源。",
+        "results": "只陈述有证据支持的观察，区分实测与推断。",
+        "discussion": "解释机制、与既有工作的关系、局限性。"
+      }
+    },
+    "frontier_review": {
+      "label": "前沿综述",
+      "language": "zh",
+      "sections": [
+        {
+          "key": "abstract",
+          "heading": "摘要",
+          "words": 300,
+          "template": null
+        },
+        {
+          "key": "scope",
+          "heading": "范围与方法",
+          "words": 600,
+          "template": "review_scope"
+        },
+        {
+          "key": "landscape",
+          "heading": "研究版图与分类",
+          "words": 1500,
+          "template": "review_landscape"
+        },
+        {
+          "key": "mechanisms",
+          "heading": "机制与设计原则",
+          "words": 1800,
+          "template": "review_mechanisms"
+        },
+        {
+          "key": "open_questions",
+          "heading": "开放问题与机会缺口",
+          "words": 1200,
+          "template": "review_gaps"
+        },
+        {
+          "key": "outlook",
+          "heading": "展望",
+          "words": 600,
+          "template": "review_outlook"
+        },
+        {
+          "key": "references",
+          "heading": "参考文献",
+          "words": 0,
+          "template": null
+        }
+      ],
+      "section_notes": {
+        "scope": "说明检索范围、时间窗与纳入排除标准。",
+        "landscape": "按机制或设计原则分类，不做逐年罗列。",
+        "open_questions": "与本体里的 opportunity_gaps 对齐，逐条给证据状态。"
+      },
+      "templates": {
+        "review_scope": {
+          "role": "交代检索范围与纳入排除标准，让读者知道这篇综述覆盖了什么、没覆盖什么",
+          "focus": [
+            "检索数据库与时间窗",
+            "纳入/排除标准",
+            "筛选流程"
+          ],
+          "required_dimensions": [
+            "papers",
+            "comparison"
+          ],
+          "evidence_types": [
+            "citation",
+            "protocol"
+          ],
+          "min_support": 3,
+          "allow_gaps": true,
+          "fields": [
+            {
+              "key": "scope_hint",
+              "label": "检索范围补充（可留空）",
+              "type": "text",
+              "preset": null,
+              "placeholder": "如：只收 2019 年后的英文原始研究，排除纯计算工作"
+            },
+            {
+              "key": "year_from",
+              "label": "时间窗起点（年）",
+              "type": "number",
+              "preset": 2019
+            },
+            {
+              "key": "citation_floor",
+              "label": "最少引用条数",
+              "type": "number",
+              "preset": 5
+            }
+          ]
+        },
+        "review_landscape": {
+          "role": "按机制或设计原则建立研究版图，给出分类依据，而不是逐年罗列",
+          "focus": [
+            "分类维度",
+            "各类别的代表工作",
+            "类别之间的关系"
+          ],
+          "required_dimensions": [
+            "comparison",
+            "papers"
+          ],
+          "evidence_types": [
+            "citation",
+            "comparative",
+            "mechanism"
+          ],
+          "min_support": 4,
+          "allow_gaps": true,
+          "fields": [
+            {
+              "key": "axis",
+              "label": "分类主轴（可留空）",
+              "type": "textarea",
+              "preset": null,
+              "placeholder": "如：按催化模式分（金/银/光氧化还原）"
+            }
+          ]
+        },
+        "review_mechanisms": {
+          "role": "归纳机制与设计原则，尽量给出可比较的量化参数",
+          "focus": [
+            "反应/作用机制",
+            "关键中间体",
+            "参数范围与边界条件"
+          ],
+          "required_dimensions": [
+            "conditions",
+            "comparison"
+          ],
+          "evidence_types": [
+            "mechanism",
+            "quantitative",
+            "comparative"
+          ],
+          "min_support": 2,
+          "allow_gaps": true,
+          "fields": [
+            {
+              "key": "must_compare",
+              "label": "必须对比的路线（可留空）",
+              "type": "textarea",
+              "preset": null,
+              "placeholder": "如：炔酰胺 vs 炔丙基两条路线"
+            }
+          ]
+        },
+        "review_gaps": {
+          "role": "逐条给出开放问题与机会缺口，并标注每条的证据状态",
+          "focus": [
+            "未解决的问题",
+            "证据薄弱处",
+            "可切入的机会"
+          ],
+          "required_dimensions": [
+            "papers"
+          ],
+          "evidence_types": [
+            "citation",
+            "mechanism"
+          ],
+          "min_support": 2,
+          "allow_gaps": true,
+          "fields": [
+            {
+              "key": "gap_focus",
+              "label": "优先关注的缺口（可留空）",
+              "type": "textarea",
+              "preset": null,
+              "placeholder": "如：区域选择性的定量预测"
+            }
+          ]
+        },
+        "review_outlook": {
+          "role": "给出可执行的研究方向与判断依据，避免口号式展望",
+          "focus": [
+            "近期可做的事",
+            "需要的新方法/新数据",
+            "预期影响"
+          ],
+          "required_dimensions": [
+            "papers"
+          ],
+          "evidence_types": [
+            "citation",
+            "mechanism"
+          ],
+          "min_support": 1,
+          "allow_gaps": true,
+          "fields": []
+        }
+      },
+      "dimension_weights": {
+        "papers": 0.3,
+        "knowledge": 0.2,
+        "conditions": 0.2,
+        "comparison": 0.15,
+        "requirements": 0.1,
+        "evidence": 0.05
+      },
+      "allow_gaps": true
+    },
+    "experiment_protocol": {
+      "label": "实验方案",
+      "language": "zh",
+      "sections": [
+        {
+          "key": "objective",
+          "heading": "研究目标",
+          "words": 300,
+          "template": "proto_objective"
+        },
+        {
+          "key": "background",
+          "heading": "背景与依据",
+          "words": 600,
+          "template": "proto_background"
+        },
+        {
+          "key": "design",
+          "heading": "实验设计",
+          "words": 900,
+          "template": "proto_design"
+        },
+        {
+          "key": "groups",
+          "heading": "分组与对照",
+          "words": 600,
+          "template": "proto_groups"
+        },
+        {
+          "key": "parameters",
+          "heading": "参数与条件",
+          "words": 600,
+          "template": "proto_parameters"
+        },
+        {
+          "key": "readouts",
+          "heading": "观察指标",
+          "words": 400,
+          "template": "proto_readouts"
+        },
+        {
+          "key": "risks",
+          "heading": "风险与备选方案",
+          "words": 500,
+          "template": "proto_risks"
+        },
+        {
+          "key": "references",
+          "heading": "参考文献",
+          "words": 0,
+          "template": null
+        }
+      ],
+      "section_notes": {
+        "parameters": "逐项给出可量化条件（温度/溶剂/当量/时间等）与来源证据。",
+        "risks": "至少 2 条与条件兼容性、选择性、可放大性相关的具体风险。"
+      },
+      "templates": {
+        "proto_objective": {
+          "role": "给出可检验的研究目标与成功判据",
+          "focus": [
+            "研究问题",
+            "假设",
+            "成功判据"
+          ],
+          "required_dimensions": [
+            "papers"
+          ],
+          "evidence_types": [
+            "citation",
+            "mechanism"
+          ],
+          "min_support": 1,
+          "allow_gaps": true,
+          "fields": [
+            {
+              "key": "hypothesis",
+              "label": "核心假设（可留空）",
+              "type": "text",
+              "preset": null,
+              "placeholder": "如：大位阻膦配体把区域选择性提高到 10:1 以上"
+            }
+          ]
+        },
+        "proto_background": {
+          "role": "交代立题依据与已有证据，说明为什么值得做这个实验",
+          "focus": [
+            "既有结果",
+            "尚未验证的部分",
+            "风险来源"
+          ],
+          "required_dimensions": [
+            "papers"
+          ],
+          "evidence_types": [
+            "citation",
+            "mechanism"
+          ],
+          "min_support": 2,
+          "allow_gaps": true,
+          "fields": []
+        },
+        "proto_design": {
+          "role": "给出实验设计：变量、对照、重复与判定方式",
+          "focus": [
+            "自变量与因变量",
+            "对照设置",
+            "重复次数与统计方法"
+          ],
+          "required_dimensions": [
+            "conditions",
+            "comparison"
+          ],
+          "evidence_types": [
+            "protocol",
+            "quantitative",
+            "comparative"
+          ],
+          "min_support": 2,
+          "allow_gaps": true,
+          "fields": [
+            {
+              "key": "replicates",
+              "label": "重复次数",
+              "type": "number",
+              "preset": 3
+            },
+            {
+              "key": "variables",
+              "label": "关键变量（可留空）",
+              "type": "textarea",
+              "preset": null,
+              "placeholder": "如：配体电子效应、温度、当量比"
+            }
+          ]
+        },
+        "proto_groups": {
+          "role": "列清分组与对照，保证每一组都有存在理由",
+          "focus": [
+            "实验组",
+            "阴性/阳性对照",
+            "空白与溶剂对照"
+          ],
+          "required_dimensions": [
+            "comparison"
+          ],
+          "evidence_types": [
+            "protocol",
+            "comparative"
+          ],
+          "min_support": 2,
+          "allow_gaps": true,
+          "fields": []
+        },
+        "proto_parameters": {
+          "role": "逐项给出可量化条件与来源：温度、溶剂、当量、时间、浓度、气氛等",
+          "focus": [
+            "温度",
+            "溶剂/介质",
+            "当量与浓度",
+            "时间与气氛"
+          ],
+          "required_dimensions": [
+            "conditions"
+          ],
+          "evidence_types": [
+            "quantitative",
+            "protocol"
+          ],
+          "min_support": 1,
+          "allow_gaps": true,
+          "fields": [
+            {
+              "key": "params",
+              "label": "关键参数补充（可留空）",
+              "type": "textarea",
+              "preset": null,
+              "placeholder": "如：无水无氧，-20 °C 滴加，2 h 后升温至 25 °C"
+            },
+            {
+              "key": "scale",
+              "label": "反应规模/物料量级（可留空）",
+              "type": "text",
+              "preset": null,
+              "placeholder": "如：0.2 mmol 规模"
+            }
+          ]
+        },
+        "proto_readouts": {
+          "role": "定义观察指标与测量方式，说明如何判定成功或失败",
+          "focus": [
+            "主指标",
+            "副指标",
+            "测量方法与误差"
+          ],
+          "required_dimensions": [
+            "conditions"
+          ],
+          "evidence_types": [
+            "quantitative",
+            "protocol"
+          ],
+          "min_support": 1,
+          "allow_gaps": true,
+          "fields": [
+            {
+              "key": "primary_metric",
+              "label": "主指标（可留空）",
+              "type": "textarea",
+              "preset": null,
+              "placeholder": "如：分离收率与区域选择性比（dr/rr）"
+            }
+          ]
+        },
+        "proto_risks": {
+          "role": "给出至少两条具体风险与对应备选方案，风险要与条件兼容性、选择性或可放大性相关",
+          "focus": [
+            "条件兼容性风险",
+            "选择性风险",
+            "可放大性风险",
+            "备选方案"
+          ],
+          "required_dimensions": [
+            "papers",
+            "comparison"
+          ],
+          "evidence_types": [
+            "mechanism",
+            "comparative",
+            "risk"
+          ],
+          "min_support": 1,
+          "allow_gaps": true,
+          "fields": [
+            {
+              "key": "known_failures",
+              "label": "已知失败/负结果（可留空）",
+              "type": "textarea",
+              "preset": null,
+              "placeholder": "如：同类底物在碱性条件下发生分解"
+            }
+          ]
+        }
+      },
+      "dimension_weights": {
+        "papers": 0.3,
+        "knowledge": 0.2,
+        "conditions": 0.2,
+        "comparison": 0.15,
+        "requirements": 0.1,
+        "evidence": 0.05
+      },
+      "allow_gaps": true
+    },
+    "grant_proposal": {
+      "label": "基金申请书",
+      "language": "zh",
+      "sections": [
+        {
+          "key": "summary",
+          "heading": "摘要",
+          "words": 400
+        },
+        {
+          "key": "significance",
+          "heading": "立项依据",
+          "words": 1500
+        },
+        {
+          "key": "objectives",
+          "heading": "研究目标与内容",
+          "words": 1200
+        },
+        {
+          "key": "approach",
+          "heading": "研究方案与技术路线",
+          "words": 1500
+        },
+        {
+          "key": "feasibility",
+          "heading": "可行性分析",
+          "words": 800
+        },
+        {
+          "key": "plan",
+          "heading": "进度安排",
+          "words": 400
+        },
+        {
+          "key": "references",
+          "heading": "参考文献",
+          "words": 0
+        }
+      ],
+      "section_notes": {
+        "feasibility": "结合本体里的机制证据与已入库实验结果说明可行性。"
+      }
+    },
+    "rebuttal": {
+      "label": "审稿回复",
+      "language": "zh",
+      "sections": [
+        {
+          "key": "summary",
+          "heading": "总体回应",
+          "words": 400
+        },
+        {
+          "key": "point_by_point",
+          "heading": "逐条回应",
+          "words": 1500
+        },
+        {
+          "key": "changes",
+          "heading": "修改清单",
+          "words": 600
+        }
+      ],
+      "section_notes": {
+        "point_by_point": "每条先复述审稿意见，再给证据与修改位置，避免情绪化表述。"
+      }
+    }
+  },
+  "prompts": {
+    "outline_system": "你是科研写作规划助手。请依据主题与体裁生成结构化大纲，只输出 JSON。",
+    "outline_user": "体裁：{genre_label}\n主题：{topic}\n可用素材摘要：\n{materials_digest}\n\n请输出 JSON：{\"sections\": [{\"key\": \"...\", \"heading\": \"...\"}]}。key 用英文小写下划线，heading 用中文。",
+    "section_system": "你是科研论文写作助手。请基于给定素材撰写一个章节草稿，只写正文，不要复述指令。",
+    "section_user": "主题：{topic}\n章节：{heading}\n写作要求：{note}\n目标字数：约 {words} 字\n素材（每条含编号，引用时请在该句末尾标注对应编号）：\n{materials}\n\n要求：\n1. 只使用素材中出现的证据；没有证据的推断必须写「（假设）」；\n2. 引用格式为 [编号]，编号必须来自上方素材；\n3. 不要编造文献、数值或结论。",
+    "polish_system": "你是学术写作润色助手。请在不改变原意、不删减引用编号的前提下改善表达、语法与逻辑，只输出润色后的正文。",
+    "polish_user": "{content}",
+    "section_compose_user": "研究主题：{topic}\n本节标题：{heading}\n本部分职责：{role}\n写作要求：{note}\n目标字数：约 {words} 字\n\n【给模型的输入】以下是结构化输入。它是**写给你看的**，不是正文内容：\n- 标为「用户指定」的条目：用户的明确要求，优先级最高，必须落实；\n- 标为「规划拟定」「模板默认」的条目：默认取值，可按证据调整。\n{instruction}\n\n【可引用素材】方括号数字即引文编号，**只能引用下列编号**：\n{materials}\n\n【判定依据】仅供你判断分寸，**不要写进正文**：\n{basis}\n\n【证据缺口】{gap_hint}\n\n【输出纪律】只输出本节正文本身（Markdown，不要重复标题），并且：\n1. 每处事实性陈述后紧跟 [编号]，编号必须来自上方素材清单；\n2. 严禁引用清单外的编号（会被判为越界引文并标红）；\n3. 没有证据支撑的推断必须写成「（推断）」，不得编造文献、数值或结论；\n4. **正文里不得出现任何元叙述**：不要出现「用户指定」「规划拟定」「模板默认」\n   「本部分职责」「结构化输入」「据给定文献」「除…外」「以下…」这类提示词或\n   来源标签的字样，也不要把「（用户指定）」当成正文标注——直接把要求落实进内容；\n5. 不得复述【判定依据】或【证据缺口】的内容；\n6. 素材里没有的参数/条件，直接省略或写成「（推断）」，不要写\"未提供\"\"未给出\"\n   这类对素材完整性的评论；\n7. 用户指定条目的落实方式是**体现在内容里**（数值、条件、侧重），而不是加引号复述。\n"
+  },
+  "citation_style": "gb7714",
+  "dimensions": [
+    "papers",
+    "knowledge",
+    "conditions",
+    "comparison",
+    "requirements",
+    "evidence"
+  ],
+  "evidence_types": [
+    "citation",
+    "mechanism",
+    "quantitative",
+    "comparative",
+    "protocol",
+    "risk"
+  ]
+}

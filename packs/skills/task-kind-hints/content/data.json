@@ -1,0 +1,68 @@
+{
+  "name": "task-kind-hints",
+  "description": "任务类型判定关键词（模型不可用时的确定性兜底）",
+  "generative": [
+    "提出",
+    "propose",
+    "new method",
+    "新方法",
+    "新方案",
+    "设计",
+    "框架",
+    "new framework",
+    "新框架",
+    "候选",
+    "策略",
+    "approach"
+  ],
+  "summary": [
+    "综述",
+    "总结",
+    "review",
+    "summarize",
+    "调研"
+  ],
+  "frontier": [
+    "前沿",
+    "最新",
+    "进展",
+    "趋势",
+    "frontier"
+  ],
+  "evaluation": [
+    "评估",
+    "比较",
+    "对比",
+    "选择",
+    "evaluate",
+    "compare"
+  ],
+  "content_type": {
+    "research_directions": [
+      "提出",
+      "propose",
+      "new method",
+      "新方法",
+      "合成方法",
+      "strategy",
+      "策略",
+      "方向",
+      "idea",
+      "gap",
+      "候选"
+    ],
+    "experiment_protocol": [
+      "实验",
+      "protocol",
+      "design",
+      "设计"
+    ],
+    "frontier_review": [
+      "前沿",
+      "最新",
+      "进展",
+      "survey",
+      "review"
+    ]
+  }
+}

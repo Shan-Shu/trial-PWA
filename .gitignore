@@ -1,0 +1,35 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# 铏氭嫙鐜
+.venv
+
+# 娴嬭瘯涓存椂鐩綍锛堝彈闄愭矙绠变笅 tempfile 涓嶅彲鍐欐椂鐨勫洖閫€浣嶇疆锛?.test-tmp/
+.dsh-tmp/
+# 鍙楅檺浠ょ墝鍒涘缓鐨勪复鏃剁洰褰曪紙ACL 闄愬埗瀵艰嚧鏃犳硶鍒犻櫎锛屽拷鐣ヤ箣锛?/tmp????????/
+
+# 鏈湴瀵嗛挜
+.env
+.env.*
+!.env.example
+*.log
+
+# 鏈湴鏁版嵁锛堣鏂?PDF BLOB銆佹竻娲楁枃鏈€佸姩鎬佹湰浣撴暟鎹簱锛?data/
+
+# 瀵煎嚭/鐢熸垚鐗╋紙鐪嬫澘鍥捐氨瀵煎嚭銆佺涓夋柟 vendor 鍓湰绛夛級
+assets/
+output/
+
+# Node 渚ф牎楠屽伐鍏烽摼锛坔eadless 娴忚鍣ㄥ啋鐑燂級锛氫緷璧栦笉鍏ュ簱锛宲ackage.json 鍏ュ簱
+node_modules/
+npm-debug.log*
+
+# 浼氳瘽闄勪欢锛堢敱 agent 浼氳瘽涓婁紶鐨勫師濮嬫枃妗ｏ紝涓嶅叆搴擄級
+.dsh-attachments/
+
+data/

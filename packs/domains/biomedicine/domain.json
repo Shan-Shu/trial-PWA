@@ -1,0 +1,56 @@
+{
+  "kind": "biomedicine",
+  "keywords": [
+    "疾病",
+    "药物",
+    "细胞",
+    "适应症",
+    "临床",
+    "患者",
+    "免疫",
+    "生物相容",
+    "组织修复",
+    "毒性",
+    "clinical",
+    "disease",
+    "drug"
+  ],
+  "profile": {
+    "label": "生物医学/材料",
+    "dimensions": [
+      "分子与细胞机制",
+      "生物相容性",
+      "免疫反应",
+      "适应症",
+      "安全性与毒性",
+      "药代/代谢",
+      "临床转化"
+    ],
+    "candidate_entity_types": [
+      "Disease",
+      "Drug",
+      "CellType",
+      "BiologicalProcess",
+      "Target",
+      "Protein",
+      "Gene",
+      "Material",
+      "Method",
+      "AnimalModel",
+      "ClinicalOutcome"
+    ],
+    "candidate_relation_types": [
+      "promotes",
+      "inhibits",
+      "regulates",
+      "treats",
+      "targets",
+      "enables",
+      "causes",
+      "correlates_with",
+      "is_a",
+      "part_of",
+      "improves_upon"
+    ]
+  }
+}

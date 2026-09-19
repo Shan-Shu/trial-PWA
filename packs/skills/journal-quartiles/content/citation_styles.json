@@ -1,0 +1,225 @@
+{
+  "name": "citation-styles",
+  "description": "引用格式模板与期刊写法覆盖；与 quartiles/quartile_scores 共用 packs.normalize_journal_key() 作为期刊主键。合并自 paper_writing_assistant 的 library/citation.py，并补齐其三个缺陷（恒 @article、缺卷期页、中文 cite key）。",
+  "default_style": "gb7714",
+  "styles": {
+    "gb7714": {
+      "label": "GB/T 7714-2015",
+      "kind": "plain",
+      "journal_template": "{authors}. {title}[{doc_type}]. {venue}, {year}{volume_part}{pages_part}. DOI:{doi}.",
+      "doc_type_default": "J",
+      "doc_type_by_source_type": {
+        "proceedings": "C",
+        "book": "M",
+        "book-chapter": "M",
+        "repository": "EB/OL",
+        "preprint": "EB/OL",
+        "posted-content": "EB/OL",
+        "dataset": "DS",
+        "thesis": "D",
+        "report": "R"
+      },
+      "missing": "无"
+    },
+    "apa": {
+      "label": "APA 7th",
+      "kind": "plain",
+      "journal_template": "{authors} ({year}). {title}. {venue}{volume_part}{pages_part}. https://doi.org/{doi}",
+      "doc_type_default": "",
+      "doc_type_by_source_type": {},
+      "missing": "n.d."
+    },
+    "acs": {
+      "label": "ACS",
+      "kind": "plain",
+      "journal_template": "{authors} {year}. {title}. {venue_abbrev}{volume_part}{pages_part}. DOI: {doi}.",
+      "doc_type_default": "",
+      "doc_type_by_source_type": {},
+      "missing": "n.d."
+    },
+    "bibtex": {
+      "label": "BibTeX",
+      "kind": "bibtex",
+      "entry_type_default": "misc",
+      "entry_type_by_source_type": {
+        "journal": "article",
+        "journal-article": "article",
+        "proceedings": "inproceedings",
+        "conference": "inproceedings",
+        "book": "inbook",
+        "book-chapter": "incollection",
+        "repository": "misc",
+        "preprint": "misc",
+        "posted-content": "misc",
+        "dataset": "misc",
+        "thesis": "phdthesis",
+        "report": "techreport"
+      },
+      "fields": ["author", "title", "journal", "year", "volume", "number", "pages", "doi", "url"],
+      "venue_field_by_source_type": {
+        "proceedings": "booktitle",
+        "conference": "booktitle",
+        "book": "booktitle",
+        "book-chapter": "booktitle"
+      },
+      "missing": "n.d."
+    },
+    "ris": {
+      "label": "RIS",
+      "kind": "ris",
+      "type_by_source_type": {
+        "journal": "JOUR",
+        "journal-article": "JOUR",
+        "proceedings": "CONF",
+        "conference": "CONF",
+        "book": "BOOK",
+        "book-chapter": "CHAP",
+        "repository": "ELEC",
+        "preprint": "ELEC",
+        "posted-content": "ELEC",
+        "dataset": "DATA",
+        "thesis": "THES",
+        "report": "RPRT"
+      },
+      "type_default": "GEN",
+      "missing": ""
+    },
+    "markdown": {
+      "label": "Markdown 清单",
+      "kind": "markdown",
+      "missing": "—"
+    }
+  },
+  "venue_overrides": {
+    "angewandte chemie international edition": {
+      "abbrev": "Angew. Chem. Int. Ed.",
+      "bibtex_venue": "Angew. Chem., Int. Ed.",
+      "canonical": "Angewandte Chemie International Edition"
+    },
+    "journal of the american chemical society": {
+      "abbrev": "J. Am. Chem. Soc.",
+      "bibtex_venue": "J. Am. Chem. Soc.",
+      "canonical": "Journal of the American Chemical Society"
+    },
+    "organic letters": {
+      "abbrev": "Org. Lett.",
+      "bibtex_venue": "Org. Lett.",
+      "canonical": "Organic Letters"
+    },
+    "chemical science": {
+      "abbrev": "Chem. Sci.",
+      "bibtex_venue": "Chem. Sci.",
+      "canonical": "Chemical Science"
+    },
+    "acs catalysis": {
+      "abbrev": "ACS Catal.",
+      "bibtex_venue": "ACS Catal.",
+      "canonical": "ACS Catalysis"
+    },
+    "chemical communications": {
+      "abbrev": "Chem. Commun.",
+      "bibtex_venue": "Chem. Commun.",
+      "canonical": "Chemical Communications"
+    },
+    "chemistry a european journal": {
+      "abbrev": "Chem. Eur. J.",
+      "bibtex_venue": "Chem. Eur. J.",
+      "canonical": "Chemistry – A European Journal"
+    },
+    "european journal of organic chemistry": {
+      "abbrev": "Eur. J. Org. Chem.",
+      "bibtex_venue": "Eur. J. Org. Chem.",
+      "canonical": "European Journal of Organic Chemistry"
+    },
+    "journal of organic chemistry": {
+      "abbrev": "J. Org. Chem.",
+      "bibtex_venue": "J. Org. Chem.",
+      "canonical": "The Journal of Organic Chemistry"
+    },
+    "advanced synthesis catalysis": {
+      "abbrev": "Adv. Synth. Catal.",
+      "bibtex_venue": "Adv. Synth. Catal.",
+      "canonical": "Advanced Synthesis & Catalysis"
+    },
+    "nature chemistry": {
+      "abbrev": "Nat. Chem.",
+      "bibtex_venue": "Nat. Chem.",
+      "canonical": "Nature Chemistry"
+    },
+    "nature catalysis": {
+      "abbrev": "Nat. Catal.",
+      "bibtex_venue": "Nat. Catal.",
+      "canonical": "Nature Catalysis"
+    },
+    "nature synthesis": {
+      "abbrev": "Nat. Synth.",
+      "bibtex_venue": "Nat. Synth.",
+      "canonical": "Nature Synthesis"
+    },
+    "green chemistry": {
+      "abbrev": "Green Chem.",
+      "bibtex_venue": "Green Chem.",
+      "canonical": "Green Chemistry"
+    },
+    "acs sustainable chemistry engineering": {
+      "abbrev": "ACS Sustainable Chem. Eng.",
+      "bibtex_venue": "ACS Sustainable Chem. Eng.",
+      "canonical": "ACS Sustainable Chemistry & Engineering"
+    },
+    "journal of catalysis": {
+      "abbrev": "J. Catal.",
+      "bibtex_venue": "J. Catal.",
+      "canonical": "Journal of Catalysis"
+    },
+    "chemical reviews": {
+      "abbrev": "Chem. Rev.",
+      "bibtex_venue": "Chem. Rev.",
+      "canonical": "Chemical Reviews"
+    },
+    "chemical society reviews": {
+      "abbrev": "Chem. Soc. Rev.",
+      "bibtex_venue": "Chem. Soc. Rev.",
+      "canonical": "Chemical Society Reviews"
+    },
+    "accounts of chemical research": {
+      "abbrev": "Acc. Chem. Res.",
+      "bibtex_venue": "Acc. Chem. Res.",
+      "canonical": "Accounts of Chemical Research"
+    },
+    "nature": {
+      "abbrev": "Nature",
+      "bibtex_venue": "Nature",
+      "canonical": "Nature"
+    },
+    "science": {
+      "abbrev": "Science",
+      "bibtex_venue": "Science",
+      "canonical": "Science"
+    },
+    "journal of the american chemical society au": {
+      "abbrev": "JACS Au",
+      "bibtex_venue": "JACS Au",
+      "canonical": "JACS Au"
+    },
+    "organic chemistry frontiers": {
+      "abbrev": "Org. Chem. Front.",
+      "bibtex_venue": "Org. Chem. Front.",
+      "canonical": "Organic Chemistry Frontiers"
+    },
+    "catalysis science technology": {
+      "abbrev": "Catal. Sci. Technol.",
+      "bibtex_venue": "Catal. Sci. Technol.",
+      "canonical": "Catalysis Science & Technology"
+    },
+    "rsc advances": {
+      "abbrev": "RSC Adv.",
+      "bibtex_venue": "RSC Adv.",
+      "canonical": "RSC Advances"
+    },
+    "beilstein journal of organic chemistry": {
+      "abbrev": "Beilstein J. Org. Chem.",
+      "bibtex_venue": "Beilstein J. Org. Chem.",
+      "canonical": "Beilstein Journal of Organic Chemistry"
+    }
+  }
+}

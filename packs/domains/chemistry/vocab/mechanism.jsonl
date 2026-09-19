@@ -1,0 +1,31 @@
+{"section": "condition_keywords", "items": ["equiv", "mol%", "mol %", "temp", "°c", "yield", "equiv.", "dce", "thf", "dcm", "toluene", "dioxane", "dmf", "reflux", "rt", "hours", "min", "ee ", "dr ", "sealed tube", "under argon", "under nitrogen"], "note": "化学条件线索词（当量、mol%、溶剂、温度、ee/dr 等）"}
+{"section": "bond_change_rules", "items": ["C-N formation", "C-C formation", "C-O formation", "C-S formation", "C-H activation", "C-C cleavage", "C-N cleavage", "N-N formation", "ring formation", "ring opening", "C-X formation"], "note": "成键/断键短语"}
+{"section": "hard_constraint_hints", "items": ["氮", "环", "拓扑", "氮原子", "骨架", "选择性", "原子经济", "步骤", "scale", "yield", "ee", "dr", "step", "ring", "nitrogen", "scaffold"], "note": "化学设计硬约束提示词"}
+{"section": "activation_rules", "name": "Lewis acid activation", "keywords": ["lewis acid", "sc(otf)", "bf3", "b(c6f5)3", "alcl3"], "note": "活化方式规则（按顺序匹配，命中首个）"}
+{"section": "activation_rules", "name": "Brønsted acid activation", "keywords": ["tsoh", "tfoh", "acid-promoted", "brønsted"], "note": "活化方式规则（按顺序匹配，命中首个）"}
+{"section": "activation_rules", "name": "π-acid / carbophilic activation", "keywords": ["gold", "au(i)", "au(iii)", "platinum", "silver", "π-acid"], "note": "活化方式规则（按顺序匹配，命中首个）"}
+{"section": "activation_rules", "name": "transition-metal C–H activation", "keywords": ["c-h activation", "c–h activation", "rhodium", "rh(iii)", "palladium", "pd(ii)"], "note": "活化方式规则（按顺序匹配，命中首个）"}
+{"section": "activation_rules", "name": "base-mediated deprotonation", "keywords": ["k2co3", "cs2co3", "dbu", "base-mediated", "naoh", "kotbu"], "note": "活化方式规则（按顺序匹配，命中首个）"}
+{"section": "activation_rules", "name": "photoredox / radical initiation", "keywords": ["photoredox", "visible light", "irradiation", "single-electron", "radical initiator"], "note": "活化方式规则（按顺序匹配，命中首个）"}
+{"section": "activation_rules", "name": "electrochemical oxidation", "keywords": ["electrochem", "electrolysis", "anodic"], "note": "活化方式规则（按顺序匹配，命中首个）"}
+{"section": "activation_rules", "name": "thermal / no catalyst", "keywords": ["thermal", "metal-free", "heating", "neat"], "note": "活化方式规则（按顺序匹配，命中首个）"}
+{"section": "intermediate_rules", "name": "vinyl cation", "keywords": ["vinyl cation", "vinylcarbene"], "note": "关键中间体规则"}
+{"section": "intermediate_rules", "name": "metal carbene", "keywords": ["carbene", "gold carbene", "α-imino"], "note": "关键中间体规则"}
+{"section": "intermediate_rules", "name": "keteniminium ion", "keywords": ["keteniminium", "ketenimine"], "note": "关键中间体规则"}
+{"section": "intermediate_rules", "name": "metal vinylidene", "keywords": ["vinylidene"], "note": "关键中间体规则"}
+{"section": "intermediate_rules", "name": "nitrenium / nitrene", "keywords": ["nitrenium", "nitrene"], "note": "关键中间体规则"}
+{"section": "intermediate_rules", "name": "azaheptatrienyl cation", "keywords": ["azaheptatrienyl", "6π-electrocyclization"], "note": "关键中间体规则"}
+{"section": "intermediate_rules", "name": "radical intermediate", "keywords": ["radical", "single-electron transfer", "set "], "note": "关键中间体规则"}
+{"section": "intermediate_rules", "name": "zwitterion / ylide", "keywords": ["zwitterion", "ylide"], "note": "关键中间体规则"}
+{"section": "intermediate_rules", "name": "metallacycle", "keywords": ["metallacycle", "rhodacycle", "palladacycle", "metalacycle"], "note": "关键中间体规则"}
+{"section": "intermediate_rules", "name": "cyclobutane / cyclopropane intermediate", "keywords": ["cyclobutane", "cyclopropane", "bicyclobutane", "bcb"], "note": "关键中间体规则"}
+{"section": "intermediate_rules", "name": "σ-alkyl / vinyl metal species", "keywords": ["vinyl metal", "σ-alkyl", "organometallic"], "note": "关键中间体规则"}
+{"section": "selectivity_rules", "name": "chiral ligand control", "keywords": ["chiral ligand", "phosphoramidite", "bisphosphine", "box ligand", "pybox"], "note": "选择性来源规则"}
+{"section": "selectivity_rules", "name": "chiral catalyst control", "keywords": ["chiral catalyst", "chiral phosphoric acid", "chiral rhodium", "chiral iridium"], "note": "选择性来源规则"}
+{"section": "selectivity_rules", "name": "substrate control", "keywords": ["substrate control", "steric", "electronic effect"], "note": "选择性来源规则"}
+{"section": "selectivity_rules", "name": "directing-group control", "keywords": ["directing group", "chelation", "dg "], "note": "选择性来源规则"}
+{"section": "selectivity_rules", "name": "regioselectivity by electronics", "keywords": ["regioselectiv", "regio-"], "note": "选择性来源规则"}
+{"section": "selectivity_rules", "name": "diastereoselectivity", "keywords": ["diastereoselectiv", "dr ", "trans-selectiv"], "note": "选择性来源规则"}
+{"section": "risk_rules", "name": "原型不兼容风险", "keywords": ["conflict", "incompatible", "decompos"], "note": "风险规则（条件冲突、选择性、成本）"}
+{"section": "risk_rules", "name": "选择性难以控制", "keywords": ["poor selectivity", "mixture", "racemiz", "erosion"], "note": "风险规则（条件冲突、选择性、成本）"}
+{"section": "risk_rules", "name": "催化剂/配体成本与前例稀缺", "keywords": ["expensive", "rare", "not reported"], "note": "风险规则（条件冲突、选择性、成本）"}

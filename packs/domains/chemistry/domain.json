@@ -1,0 +1,126 @@
+{
+  "kind": "chemistry",
+  "keywords": [
+    "ynamide",
+    "环化",
+    "催化",
+    "底物",
+    "产率",
+    "选择性",
+    "反应",
+    "合成",
+    "催化剂",
+    "heterocycle",
+    "annulation"
+  ],
+  "alias_keywords": [
+    "炔酰胺",
+    "ynamide"
+  ],
+  "profile": {
+    "label": "化学合成/催化",
+    "dimensions": [
+      "反应类型",
+      "催化剂与试剂",
+      "底物范围",
+      "区域选择性",
+      "立体选择性",
+      "反应机理",
+      "产率与反应条件",
+      "官能团兼容性",
+      "放大与绿色化学"
+    ],
+    "candidate_entity_types": [
+      "Reaction",
+      "Substrate",
+      "Reagent",
+      "Catalyst",
+      "Product",
+      "Condition",
+      "Yield",
+      "Chemical",
+      "Ligand",
+      "Solvent",
+      "Method"
+    ],
+    "candidate_relation_types": [
+      "catalyzed_by",
+      "uses_as_reactant",
+      "uses",
+      "affords",
+      "produces",
+      "requires",
+      "occurs_under",
+      "gives_yield",
+      "tolerates",
+      "is_a",
+      "part_of",
+      "improves_upon",
+      "enables"
+    ]
+  },
+  "extra_seed_node_types": [
+    [
+      "Reaction",
+      "反应"
+    ],
+    [
+      "Substrate",
+      "底物"
+    ],
+    [
+      "Reagent",
+      "试剂"
+    ],
+    [
+      "Catalyst",
+      "催化剂"
+    ],
+    [
+      "Product",
+      "产物"
+    ],
+    [
+      "Condition",
+      "反应条件"
+    ],
+    [
+      "Yield",
+      "产率"
+    ],
+    [
+      "Ligand",
+      "配体"
+    ],
+    [
+      "Solvent",
+      "溶剂"
+    ]
+  ],
+  "extra_seed_relation_types": [
+    [
+      "catalyzed_by",
+      "由…催化"
+    ],
+    [
+      "affords",
+      "生成/给出"
+    ],
+    [
+      "requires",
+      "需要…条件"
+    ],
+    [
+      "occurs_under",
+      "在…条件下发生"
+    ],
+    [
+      "gives_yield",
+      "产率为…"
+    ],
+    [
+      "tolerates",
+      "耐受…官能团"
+    ]
+  ]
+}
