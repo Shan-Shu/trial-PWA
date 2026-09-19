@@ -908,6 +908,146 @@ class BackendAdapter:
                   "引擎未实现审核偏好学习（PWA 原版是硬编码规则，已弃）")
         return []
 
+    # ================================================================== 写作台
+    # 访谈闭环 + 派工：界面的「写作台」页用这一组方法。
+    #
+    # 职责边界（引擎侧已经定好，这里只做透传）：
+    #   工作规划节点（interview）负责**规划与协作**——逐部分问答、判定支撑、
+    #   组织补齐、把需求下发成派工单；**写作**由知识消费节点与内容形成节点完成。
+    def section_templates(self, genre: str = "") -> dict[str, Any]:
+        """体裁与模板（前置问答的第一个问题要用）。"""
+        from research_agent.dashboard import section_api as secapi
+
+        return secapi.section_templates(self.db_path, genre or None)
+
+    def interview_start(self, project_id: Any, *, reset: bool = False,
+                        genre: str = "", topic: str = "",
+                        sections: list[str] | None = None) -> dict[str, Any]:
+        """开始/恢复访谈。`reset=True` 清空问答进度（已写正文保留）。"""
+        from research_agent.dashboard import section_api as secapi
+
+        return secapi.interview_start(self.db_path, int(project_id),
+                                      reset=reset, genre=genre, topic=topic,
+                                      sections_list=sections)
+
+    def interview_snapshot(self, project_id: Any) -> dict[str, Any]:
+        """访谈快照：进度 + 当前问题 + 各部分状态 + 对话历史。
+
+        `next_action` 非空表示"该起一个作业推进"，界面据此自动推进。
+        """
+        from research_agent.dashboard import section_api as secapi
+
+        return secapi.interview_snapshot(self.db_path, int(project_id))
+
+    def interview_answer(self, project_id: Any,
+                         payload: dict[str, Any]) -> dict[str, Any]:
+        """记录一次作答。**纯状态推进**，不跑耗时操作（耗时交给 step）。"""
+        from research_agent.dashboard import section_api as secapi
+
+        return secapi.interview_answer(self.db_path, int(project_id), payload)
+
+    def _use_model(self, explicit: bool | None = None) -> bool:
+        """是否允许调用真实模型。
+
+        环境变量 ``RA_DESK_OFFLINE=1`` 可强制离线——界面回归必须能离线跑，
+        否则每一步都要等真模型（拟 3 案可能几十秒），冒烟就不再是冒烟。
+        """
+        import os
+
+        if explicit is not None:
+            return bool(explicit)
+        return os.environ.get("RA_DESK_OFFLINE", "").strip().lower() not in {
+            "1", "true", "yes", "on"}
+
+    def interview_step(self, project_id: Any,
+                       progress_cb: Any = None, cancel_event: Any = None,
+                       use_model: bool | None = None) -> dict[str, Any]:
+        """推进访谈一步（拟方案 / 判定 / 协作 / 写作），返回作业信息。
+
+        `progress_cb` / `cancel_event` 由任务管理器注入：界面上的进度条与
+        「停止任务」按钮靠它们工作。
+        """
+        from research_agent.dashboard import section_api as secapi
+
+        return secapi.interview_step(self.db_path, int(project_id),
+                                     settings=self.settings,
+                                     use_model=self._use_model(use_model))
+
+    def section_job_status(self, job_id: str) -> dict[str, Any]:
+        from research_agent.dashboard import section_api as secapi
+
+        return secapi.job_status(self.db_path, str(job_id))
+
+    def cancel_section_job(self, job_id: str) -> dict[str, Any]:
+        from research_agent.dashboard import section_api as secapi
+
+        return secapi.cancel_job(self.db_path, str(job_id))
+
+    def section_trace(self, project_id: Any, section_key: str,
+                      limit: int = 20) -> dict[str, Any]:
+        """某部分的决策轨迹（每轮判定与协作的留痕）。"""
+        from research_agent.dashboard import section_api as secapi
+
+        return secapi.section_trace(self.db_path, int(project_id),
+                                    str(section_key), int(limit))
+
+    def section_content(self, project_id: Any,
+                        section_key: str) -> dict[str, Any]:
+        from research_agent.dashboard import section_api as secapi
+
+        return secapi.section_content(self.db_path, int(project_id),
+                                      str(section_key))
+
+    # ------------------------------------------ 派工（向规划节点下需求）
+    def parse_dispatch_request(self, request: str, *, project_id: Any = 0,
+                               section_key: str = "", topic: str = "",
+                               heading: str = "",
+                               verdict: dict[str, Any] | None = None,
+                               use_model: bool = True) -> dict[str, Any]:
+        """自然语言需求 → 3 个可直接派工的方案（**只解析，不执行**）。
+
+        这是"直接向工作规划节点发需求"的入口：规划节点把用户的话翻译成
+        "对哪些节点下什么单"，再由派工执行器分发给各节点。
+        """
+        from research_agent.writing import dispatch_planner as dpl
+
+        return dpl.build_dispatch_plan(
+            request=str(request or ""), db_path=self.db_path,
+            project_id=int(project_id or 0), section_key=section_key,
+            topic=topic, heading=heading, verdict=verdict or {},
+            use_model=bool(use_model), settings=self.settings)
+
+    def create_dispatch(self, plan: list[dict[str, Any]], *,
+                        project_id: Any = 0, section_key: str = "",
+                        origin: str = "user_direct", reason: str = "",
+                        budget: dict[str, Any] | None = None,
+                        progress_cb: Any = None,
+                        cancel_event: Any = None) -> dict[str, Any]:
+        """按方案下单并执行，返回含逐步回报的派工单。"""
+        from research_agent.writing import dispatch as dp
+
+        conn = self._conn()
+        try:
+            return dp.run_dispatch(
+                plan=list(plan or []), conn=conn,
+                project_id=int(project_id or 0), section_key=section_key,
+                origin=origin, reason=reason, budget=budget or {},
+                settings=self.settings, cancel_event=cancel_event)
+        finally:
+            conn.close()
+
+    def list_dispatches(self, *, project_id: Any = 0, section_key: str = "",
+                        limit: int = 20) -> list[dict[str, Any]]:
+        """最近的派工单（「当前派工」看板）。"""
+        from research_agent.writing import dispatch as dp
+
+        conn = self._conn()
+        try:
+            return dp.list_dispatches(conn, project_id=int(project_id or 0),
+                                      section_key=section_key, limit=int(limit))
+        finally:
+            conn.close()
+
     # ================================================================== 行映射
     def _paper_row(self, row: dict[str, Any],
                    extra: dict[str, Any] | None = None) -> dict[str, Any]:

@@ -17,6 +17,13 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
+# 同 smoke_desk_writing.py：stdout 走管道时用系统 ANSI 码页，✅ 会编码失败。
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, ValueError):
+        pass
+
 PAGES = ["总览", "智能检索", "知识检索", "文献库", "知识抽取",
          "动态本体", "实验工作台", "写作台", "审核中心", "系统状态"]
 

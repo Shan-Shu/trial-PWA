@@ -1,7 +1,7 @@
-﻿[project]
+[project]
 name = "research-desk"
 version = "0.1.0"
-description = "research-desk锛歅WA 鍙鍖栫晫闈紙Streamlit锛壝?trial 鐮旂┒寮曟搸锛圠angGraph 澶氭ā鍨嬬紪鎺掋€佺鐮旀绱€丳DF 瑙ｆ瀽銆佸姩鎬佹湰浣擄級"
+description = "research-desk：PWA 可视化界面（Streamlit）× trial 研究引擎（LangGraph 多模型编排、科研检索、PDF 解析、动态本体）"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
@@ -26,9 +26,9 @@ dependencies = [
 ]
 
 [project.scripts]
-# 涓诲叆鍙ｏ細Streamlit 鐣岄潰锛堟湰椤圭洰鐨勪富瑙掞級
+# 主入口：Streamlit 界面（本项目的主角）
 research-desk = "desk.app:main"
-# 寮曟搸渚т繚鐣欑殑鍏ュ彛锛堝彲閫夛細HTTP 鏁版嵁闈€佹祦姘寸嚎銆佺爺绌跺浘銆佹棩蹇楄窡闅忥級
+# 引擎侧保留的入口（可选：HTTP 数据面、流水线、研究图、日志跟随）
 research-desk-api = "research_agent.dashboard.app:main"
 research-desk-pipeline = "research_agent.pipeline:main"
 research-desk-study = "research_agent.study.graph:main"
@@ -39,5 +39,8 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-# 鏈」鐩湁涓や釜椤跺眰鍖咃細寮曟搸锛坮esearch_agent锛屼粠 trial 鍘熸牱鎼叆锛?# 涓庣晫闈?閫傞厤灞傦紙desk锛屾湰椤圭洰鏂板锛夈€?# 鍒绘剰涓嶇敤 uv_build锛氬畠鎸夐」鐩悕鎺ㄥ鍗曚釜妯″潡鍚嶏紙浼氬幓鎵?research_desk锛夛紝
-# 杩欎釜鐗堟湰涔熶笉鍚?`module-names`锛屽椤跺眰鍖呰缁曘€俬atchling 涓€琛屽０鏄庢竻妤氥€?packages = ["src/research_agent", "src/desk"]
+# 本项目有两个顶层包：引擎（research_agent，从 trial 原样搬入）
+# 与界面/适配层（desk，本项目新增）。
+# 刻意不用 uv_build：它按项目名推导单个模块名（会去找 research_desk），
+# 这个版本也不认 `module-names`，多顶层包要绕。hatchling 一行声明清楚。
+packages = ["src/research_agent", "src/desk"]

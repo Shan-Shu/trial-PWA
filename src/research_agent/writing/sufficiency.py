@@ -473,15 +473,22 @@ def evaluate_sufficiency(
     # 时反而把证据数从 2 涨不上去（库小 → 永远判不足）。阈值本身仍是"库的
     # 证据密度"要求，由 min_evidence 与自适应上限共同决定。
     evidence_ids: list[str] = []
-    rows = conn.execute(
-        "SELECT hyperedge_id FROM ontology_hyperedges "
-        "ORDER BY hyperedge_id LIMIT 40").fetchall()
-    evidence_ids = [f"H-{int(r['hyperedge_id']):04d}" for r in rows]
-    if not evidence_ids:
+    # 本体表是**懒建**的：补检/抽取跑过之前库里根本没有 ontology_hyperedges。
+    # 此处必须与上面 _COVERAGE_TARGETS 的遍历同样兜底，否则空库（新建写作项目
+    # 的第一步判定）会直接抛 no such table 把整个访谈作业打断。兜底语义上等价于
+    # "表存在但为空"——空库的证据数本来就该是 0，不是被掩盖的错误。
+    try:
         rows = conn.execute(
-            "SELECT edge_id FROM ontology_edges ORDER BY edge_id LIMIT 40"
-        ).fetchall()
-        evidence_ids = [f"E-{int(r['edge_id']):04d}-1" for r in rows][:10]
+            "SELECT hyperedge_id FROM ontology_hyperedges "
+            "ORDER BY hyperedge_id LIMIT 40").fetchall()
+        evidence_ids = [f"H-{int(r['hyperedge_id']):04d}" for r in rows]
+        if not evidence_ids:
+            rows = conn.execute(
+                "SELECT edge_id FROM ontology_edges ORDER BY edge_id LIMIT 40"
+            ).fetchall()
+            evidence_ids = [f"E-{int(r['edge_id']):04d}-1" for r in rows][:10]
+    except sqlite3.Error:
+        evidence_ids = []
     min_evidence = int(_threshold(s, "section_sufficiency_min_evidence", 3))
     if cite_hint:
         # 用户只要 1 条引用时，不该因"证据不足 3 条"再去烧一轮补检配额

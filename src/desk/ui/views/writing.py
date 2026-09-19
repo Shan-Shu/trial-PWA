@@ -1,80 +1,538 @@
+"""写作台：**工作规划节点的唯一交互界面**。
+
+形态是访谈闭环，不是"选章节 → 生成 → 润色"（那是 PWA 原版的 80 行薄壳）：
+
+    选/建项目 → 一轮前置问答（体裁 → 主题 → 要写哪些部分）
+      → 逐部分闭环：拟 3 个方案 → 你选一个 → 判定支撑够不够
+        → 不够就问你怎么处理（保留缺口 / 补检 / 自定义任务）
+        → 协作补齐 → 写作这部分 → 下一部分
+
+职责边界（引擎侧定好，界面只透传）：
+
+- **工作规划节点**负责规划与协作——问答、判定、组织补齐、**把需求下发成派工单**；
+- **写作**由知识消费节点与内容形成节点完成；
+- 「对节点下指令」面板让用户用自然语言**直接对规划节点下需求**，
+  规划节点解析成"对哪些节点下什么单"（3 个方案供选），再由派工执行器分发。
+
+**进度可见**：作业驱动阶段用 `st.fragment(run_every=1.0)` 局部轮询，
+显示百分比、当前消息与「停止这一步」；完成后自动续跑到下一步。
+连续三次没有进展就停下并说明——否则会一直烧配额。
+"""
 from __future__ import annotations
+
+from typing import Any
 
 import streamlit as st
 
+#: 阶段 → 中文（引擎 `interview.STAGE_LABEL` 是权威来源，这里只兜底）
+_STAGE_FALLBACK = {
+    "pending": "待访谈", "drafting_options": "正在拟方案",
+    "awaiting_choice": "等你选方案", "judging": "正在判定支撑",
+    "awaiting_gap_decision": "等你决定缺口",
+    "awaiting_custom_plan_choice": "等你确认任务",
+    "collaborating": "正在补齐支撑", "writing": "正在写作",
+    "done": "已完成", "failed_writable": "写作失败",
+}
 
+#: 判定维度 → 中文
+_DIM_LABELS = {
+    "papers": "命中文献", "knowledge": "知识覆盖", "conditions": "量化条件",
+    "comparison": "可比证据", "requirements": "指令要求", "evidence": "可用证据",
+}
+
+#: 连续多少次"同一步无进展"就停止自动推进
+_MAX_STALL = 3
+
+
+# ====================================================================== 入口
 def render(ctx) -> None:
     st.subheader("写作台")
-    st.caption("创建写作项目、生成大纲、调用推荐素材并生成章节草稿。")
+    st.caption("整篇由一个**工作规划节点**通过一轮问答定下来：先定体裁与要写的部分，"
+               "再逐部分拟 3 个方案；选定后先判定支撑——不够就问你怎么处理。"
+               "写作由知识消费与内容形成节点完成。")
 
-    with st.form("create_writing_project", clear_on_submit=False):
-        title = st.text_input("论文标题")
-        topic = st.text_input("研究主题", placeholder="例如：糖尿病分子机制")
-        if st.form_submit_button("创建写作项目"):
-            if title.strip():
-                project_id = ctx.service.create_writing_project(title.strip(), topic.strip())
-                st.session_state["writing_project_id"] = project_id
-                st.success("写作项目已创建。")
+    project = _pick_project(ctx)
+    if not project:
+        return
+    pid = project["id"]
 
-    projects = ctx.service.list_writing_projects()
-    if not projects:
-        st.info("还没有写作项目。")
+    snap = ctx.service.interview_snapshot(pid)
+    if not snap.get("ok"):
+        st.error(f"访谈状态读取失败：{snap.get('error') or '未知原因'}")
         return
 
-    options = {f"#{p['id']} · {p['title']}": p for p in projects}
-    label = st.selectbox("选择写作项目", list(options))
-    project = options[label]
-    project_id = int(project["id"])
+    # 有未完成的步骤就自动推进（作业驱动）；这一步可能只渲染进度
+    if _advance(ctx, pid, snap):
+        return
 
-    topic = st.text_input("当前研究主题", value=project.get("topic") or project.get("title"), key=f"topic_{project_id}")
-    if st.button("重新生成大纲", key=f"outline_{project_id}"):
-        ctx.service.generate_outline(project_id, topic.strip())
-        st.success("大纲已生成。")
+    left, right = st.columns([3, 2])
+    with left:
+        _conversation(ctx, pid, snap)
+    with right:
+        _sections(ctx, pid, snap)
+        _directive(ctx, pid, snap)
 
-    project = ctx.service.get_writing_project(project_id)
-    outline = project.get("outline") or []
 
-    materials = ctx.service.recommend_materials(topic.strip(), limit=10)
-    st.markdown("### 推荐素材")
-    if materials:
-        for m in materials:
-            title = m.get("title") or "未命名素材"
-            st.write(f"- [{m.get('type')}] {title}")
+# ====================================================================== 项目
+def _pick_project(ctx) -> dict[str, Any] | None:
+    projects = ctx.service.list_writing_projects()
+    with st.expander("选择 / 新建写作项目", expanded=not projects):
+        if projects:
+            labels = {f"#{p['id']} · {p['title']}": p for p in projects}
+            picked = st.selectbox("已有项目", list(labels),
+                                  key="desk_project_pick")
+            chosen = labels[picked]
+            st.session_state["desk_pid"] = chosen["id"]
+        c1, c2 = st.columns(2)
+        title = c1.text_input("新项目标题", key="desk_new_title")
+        topic = c2.text_input("研究主题", key="desk_new_topic")
+        if st.button("创建并开始访谈", key="desk_create"):
+            if not title.strip():
+                st.warning("标题不能为空")
+            else:
+                new_id = ctx.service.create_writing_project(title.strip(),
+                                                            topic.strip())
+                st.session_state["desk_pid"] = new_id
+                ctx.service.interview_start(new_id)
+                st.rerun()
+
+    pid = st.session_state.get("desk_pid")
+    if not pid:
+        st.info("先选择或新建一个写作项目。")
+        return None
+    for project in projects:
+        if project["id"] == pid:
+            return project
+    st.warning("选中的项目已不存在，请重新选择。")
+    st.session_state.pop("desk_pid", None)
+    return None
+
+
+# ====================================================================== 推进
+def _stage_of(snap: dict[str, Any]) -> str:
+    question = snap.get("question") or {}
+    if question.get("stage"):
+        return str(question["stage"])
+    key = question.get("section_key") or ""
+    for sec in snap.get("sections") or []:
+        if sec.get("section_key") == key:
+            return str(sec.get("stage") or "")
+    return ""
+
+
+def _advance(ctx, pid: Any, snap: dict[str, Any]) -> bool:
+    """有待执行步骤就跑一步并显示进度。返回 True 表示本次已处理完毕。"""
+    job_id = st.session_state.get("desk_job")
+    if job_id:
+        _poll_job(ctx, pid, job_id)
+        return True
+
+    if not snap.get("next_action"):
+        return False
+
+    # 同一步反复无进展就停：否则会一直烧检索/模型配额
+    signature = f"{snap.get('next_action')}:{_stage_of(snap)}"
+    if signature == st.session_state.get("desk_sig"):
+        st.session_state["desk_stall"] = st.session_state.get("desk_stall", 0) + 1
     else:
-        st.info("当前没有足够知识用于推荐素材。")
+        st.session_state["desk_sig"] = signature
+        st.session_state["desk_stall"] = 0
+    if st.session_state.get("desk_stall", 0) >= _MAX_STALL:
+        st.warning("这一步没有产生新的进展，已停止自动推进——继续重试只会消耗配额。")
+        st.caption("可以换个部分、改用「保留缺口照常撰写」，"
+                   "或用右侧「对节点下指令」换个口径。")
+        if st.button("再试一次", key="desk_retry"):
+            st.session_state["desk_stall"] = 0
+            st.rerun()
+        return True
 
-    if outline:
-        st.markdown("### 论文大纲")
-        section_labels = [f"{s.get('heading')}" for s in outline]
-        selected_label = st.selectbox("选择章节", section_labels)
-        section = next(s for s in outline if s.get("heading") == selected_label)
-        section_key = section.get("key") or selected_label
+    result = ctx.service.interview_step(pid)
+    if not result.get("ok"):
+        st.error(f"推进失败：{result.get('error') or '未知原因'}")
+        return True
+    if result.get("job_id"):
+        st.session_state["desk_job"] = result["job_id"]
+    st.rerun(scope="app")
+    return True
 
-        if st.button("生成此节草稿", key=f"gen_{project_id}_{section_key}"):
-            with st.spinner("生成章节草稿..."):
-                result = ctx.service.generate_section(
-                    project_id,
-                    section_key,
-                    selected_label,
-                    topic.strip(),
-                    materials,
-                )
-                st.success("章节草稿已生成。")
 
-        sections = ctx.service.list_writing_sections(project_id)
-        current = next((s for s in sections if s.get("section_key") == section_key), None)
-        if current:
-            st.markdown(f"#### {current.get('heading')}")
-            content = st.text_area(
-                "章节内容",
-                value=current.get("content") or "",
-                height=280,
-                key=f"section_{project_id}_{section_key}",
-            )
+def _poll_job(ctx, pid: Any, job_id: str) -> None:
+    """局部轮询作业：只刷新进度区，不重跑整页。"""
+
+    @st.fragment(run_every=1.0)
+    def _progress() -> None:
+        status = ctx.service.section_job_status(job_id)
+        if not status.get("ok"):
+            st.session_state.pop("desk_job", None)
+            st.rerun(scope="app")
+            return
+        state = str(status.get("status") or "")
+        percent = float(status.get("percent") or 0.0)
+        message = str(status.get("message") or "")
+        if state in ("running", "cancelling"):
+            st.progress(min(1.0, max(0.0, percent / 100.0)))
+            st.caption(f"{percent:.0f}% · {message or '处理中…'}")
+            if st.button("停止这一步", key=f"desk_stop_{job_id}"):
+                ctx.service.cancel_section_job(job_id)
+                st.session_state.pop("desk_job", None)
+                st.rerun(scope="app")
+            return
+        # 终态：清掉作业并整页重跑，让快照刷新
+        st.session_state.pop("desk_job", None)
+        if state == "error":
+            st.error(f"这一步失败：{status.get('error') or '未知错误'}")
+        st.rerun(scope="app")
+
+    _progress()
+
+
+# ====================================================================== 对话
+def _conversation(ctx, pid: Any, snap: dict[str, Any]) -> None:
+    history = snap.get("history") or []
+    with st.container(border=True):
+        st.markdown("#### 工作规划节点")
+        if not history:
+            st.caption("还没有对话。")
+        for item in history[-40:]:
+            mine = item.get("role") == "user"
+            with st.chat_message("user" if mine else "assistant"):
+                st.markdown(f"**{'你' if mine else 'AI'}**：{item.get('text') or ''}")
+        st.divider()
+        _question(ctx, pid, snap)
+
+
+def _question(ctx, pid: Any, snap: dict[str, Any]) -> None:
+    """随题型切换的输入区。"""
+    if snap.get("finished"):
+        st.success("所有选中的部分都已完成。可在右侧查看正文与决策轨迹。")
+        return
+
+    question = snap.get("question") or {}
+    kind = str(question.get("kind") or "")
+
+    if kind == "intake":
+        _intake(ctx, pid, question)
+    elif kind == "section_choice":
+        _section_choice(ctx, pid, question)
+    elif kind == "gap_decision":
+        _gap_decision(ctx, pid, question)
+    elif kind == "custom_plan_choice":
+        _custom_plan(ctx, pid, question)
+    elif kind == "working":
+        st.info(f"{question.get('label') or '正在处理'}…"
+                f"（「{question.get('heading') or ''}」由后端作业执行，无需作答）")
+    else:
+        st.caption("当前没有需要回答的问题。")
+
+
+def _answer(ctx, pid: Any, payload: dict[str, Any]) -> None:
+    result = ctx.service.interview_answer(pid, payload)
+    if not result.get("ok"):
+        st.error(f"作答失败：{result.get('error') or '未知原因'}")
+        return
+    st.rerun(scope="app")
+
+
+# ---------------------------------------------------------------- 前置三问
+def _intake(ctx, pid: Any, question: dict[str, Any]) -> None:
+    step = str(question.get("step") or "")
+    st.markdown(f"**{question.get('question') or ''}**")
+
+    if step == "genre":
+        options = question.get("options") or []
+        cols = st.columns(2)
+        for index, option in enumerate(options):
+            label = option.get("label") or option.get("id")
+            suffix = "（建议）" if option.get("suggested") else ""
+            if cols[index % 2].button(
+                    f"{label}{suffix} · {option.get('sections')} 节",
+                    key=f"desk_genre_{option.get('id')}",
+                    use_container_width=True):
+                _answer(ctx, pid, {"kind": "intake", "step": "genre",
+                                   "value": option.get("id")})
+        return
+
+    if step == "topic":
+        spec = question.get("input") or {}
+        topic = st.text_input("主题", value=spec.get("preset") or "",
+                              placeholder=spec.get("placeholder") or "",
+                              key="desk_topic")
+        if st.button("就用这个主题", key="desk_topic_ok"):
+            if not topic.strip():
+                st.warning("主题不能为空")
+            else:
+                _answer(ctx, pid, {"kind": "intake", "step": "topic",
+                                   "value": topic.strip()})
+        return
+
+    # sections：勾选要写的部分
+    items = question.get("items") or []
+    if question.get("note"):
+        st.caption(question["note"])
+    selectable = [i for i in items if i.get("generates_body")]
+    if not selectable:
+        # 该体裁没有任何部分挂了模板 ⇒ 一个都写不了。直说原因并给出出路，
+        # 否则用户只看到一排灰掉的勾选框，不知道该怎么办。
+        st.warning("这个体裁下**没有任何部分配了模板**，因此现在什么都写不了。"
+                   "请回到上一步换一个体裁——「文献综述」与「实验方案」"
+                   "两套模板是齐的。")
+        if st.button("重新选择体裁", key="desk_reselect_genre"):
+            # 保留已填主题：reset 会清进度，不该顺带让用户重打一遍主题
+            topic = str((_snapshot(ctx, pid).get("intake") or {}).get("topic") or "")
+            ctx.service.interview_start(pid, reset=True, topic=topic)
+            st.rerun(scope="app")
+        return
+    chosen: list[str] = []
+    for item in items:
+        disabled = not item.get("generates_body")
+        picked = st.checkbox(
+            f"{item.get('heading')}"
+            + (f"（{item.get('words')} 字）" if item.get("words") else "")
+            + ("" if item.get("generates_body") else " — 本体裁无模板，不生成正文"),
+            value=bool(item.get("selected")) and not disabled,
+            disabled=disabled, key=f"desk_sec_{item.get('key')}")
+        if picked:
+            chosen.append(str(item.get("key")))
+    if st.button("开始逐部分访谈", key="desk_sections_ok"):
+        if not chosen:
+            st.warning("至少要选一个部分")
+        else:
+            _answer(ctx, pid, {"kind": "intake", "step": "sections",
+                               "value": chosen})
+
+
+def _snapshot(ctx, pid: Any) -> dict[str, Any]:
+    """读快照（`_intake` 里重挑体裁时要用，避免跨函数引用局部变量）。"""
+    return ctx.service.interview_snapshot(pid) or {}
+
+
+# ---------------------------------------------------------------- 三选一
+def _section_choice(ctx, pid: Any, question: dict[str, Any]) -> None:
+    st.markdown(f"**「{question.get('heading')}」要写什么内容？**")
+    options = [o for o in (question.get("options") or []) if o.get("summary")]
+    if options:
+        labels = {f"方案{o.get('id')}：{o.get('summary')}": o.get("id")
+                  for o in options}
+        picked = st.radio("AI 拟的方向", list(labels), key="desk_choice")
+        if st.button("就按这个方向写", key="desk_choice_ok"):
+            _answer(ctx, pid, {"kind": "section_choice",
+                               "section_key": question.get("section_key"),
+                               "choice": labels[picked]})
+    else:
+        st.caption("（AI 没有拟出方案，可直接让 AI 决定或自己写）")
+
+    c1, c2 = st.columns(2)
+    if c1.button("让 AI 自己决定", key="desk_choice_ai"):
+        _answer(ctx, pid, {"kind": "section_choice",
+                           "section_key": question.get("section_key"),
+                           "choice": "ai"})
+    with c2.popover("我自己写", use_container_width=True):
+        text = st.text_area("写好的内容", key="desk_self_text", height=160)
+        if st.button("提交我写的内容", key="desk_self_ok"):
+            if not text.strip():
+                st.warning("内容不能为空")
+            else:
+                _answer(ctx, pid, {"kind": "section_choice",
+                                   "section_key": question.get("section_key"),
+                                   "choice": "self", "text": text.strip()})
+
+
+# ---------------------------------------------------------------- 缺口决定
+def _gap_decision(ctx, pid: Any, question: dict[str, Any]) -> None:
+    verdict = question.get("verdict") or {}
+    unmet = [_DIM_LABELS.get(d, d)
+             for d in (verdict.get("unmet_dimensions") or [])]
+    counts = verdict.get("counts") or {}
+    spent = int(question.get("rounds_spent") or 0)
+    budget_spent = bool(question.get("budget_spent"))
+
+    st.markdown(f"**「{question.get('heading')}」的支撑不足，怎么办？**")
+    st.warning(f"未达标：{'、'.join(unmet) or '—'}；"
+               f"命中文献 {counts.get('matched_papers', 0)} 篇 · "
+               f"已抽取 {counts.get('extracted_papers', 0)} 篇 · "
+               f"带量化条件的超边 {counts.get('hyperedges_with_quantity', 0)}"
+               f"/{counts.get('hyperedges', 0)}"
+               + (f" · 已累计补检 {spent} 轮" if spent else ""))
+    if budget_spent:
+        st.error("补检预算已用尽。再补检不会再产生可用证据——"
+                 "建议「保留缺口照常撰写」（正文会显式标注缺口），"
+                 "或用「自定义任务」换个口径。")
+
+    options = question.get("options") or []
+    by_id = {o.get("id"): o for o in options}
+    choices = []
+    for option in options:
+        if option.get("disabled"):
+            choices.append(f"{option.get('label')}"
+                           f"（{option.get('hint') or '不可用'}）")
+        else:
+            choices.append(str(option.get("label")))
+    labels = {text: option.get("id") for text, option in zip(choices, options)}
+    default = next((text for text, oid in labels.items()
+                    if by_id.get(oid, {}).get("recommended")), choices[0])
+    picked = st.radio("处理方式", choices, index=choices.index(default),
+                      key="desk_gap")
+
+    payload: dict[str, Any] = {"kind": "gap_decision",
+                               "section_key": question.get("section_key"),
+                               "decision": labels[picked]}
+    if labels[picked] == "collect":
+        rounds = by_id.get("collect", {}).get("rounds") or {}
+        c1, c2 = st.columns([1, 2])
+        use_ai = c2.checkbox("让 AI 决定轮数", key="desk_rounds_ai")
+        value = c1.number_input("本次最多补检轮数",
+                                min_value=int(rounds.get("min") or 1),
+                                max_value=int(rounds.get("max") or 5),
+                                value=int(rounds.get("default") or 2),
+                                key="desk_rounds", disabled=use_ai)
+        payload["rounds"] = "ai" if use_ai else int(value)
+    elif labels[picked] == "custom":
+        text = st.text_input("用你自己的话说明要补什么",
+                             placeholder="例如：补 3 篇讲区域选择性的最新文献",
+                             key="desk_custom_text")
+        payload["text"] = text.strip()
+
+    if st.button("就这么办", key="desk_gap_ok"):
+        if labels[picked] == "custom" and not payload.get("text"):
+            st.warning("自定义任务需要写一句说明")
+            return
+        _answer(ctx, pid, payload)
+
+
+# ---------------------------------------------------------------- 自定义方案
+def _custom_plan(ctx, pid: Any, question: dict[str, Any]) -> None:
+    st.markdown(f"**你的要求**：{question.get('custom_input') or ''}")
+    options = [o for o in (question.get("options") or []) if o.get("tasks")]
+    if options:
+        labels = {str(o.get("id")): o for o in options}
+        picked = st.radio(
+            "解析出的执行方案",
+            list(labels),
+            format_func=lambda key: "方案%s：%s" % (key, labels[key].get("label")),
+            key="desk_cplan")
+        st.caption(labels[picked].get("hint") or "")
+        if st.button("用选中的方案", key="desk_cplan_ok"):
+            _answer(ctx, pid, {"kind": "custom_plan",
+                               "section_key": question.get("section_key"),
+                               "choice": picked})
+    c1, c2 = st.columns(2)
+    if c1.button("让 AI 自己决定", key="desk_cplan_ai"):
+        _answer(ctx, pid, {"kind": "custom_plan",
+                           "section_key": question.get("section_key"),
+                           "choice": "ai"})
+    with c2.popover("我再明确一点", use_container_width=True):
+        text = st.text_area("补充说明", key="desk_refine_text", height=120)
+        if st.button("按补充说明重新解析", key="desk_refine_ok"):
+            if not text.strip():
+                st.warning("请写出要补充的说明")
+            else:
+                _answer(ctx, pid, {"kind": "custom_plan",
+                                   "section_key": question.get("section_key"),
+                                   "choice": "refine", "text": text.strip()})
+
+
+# ====================================================================== 部分
+def _sections(ctx, pid: Any, snap: dict[str, Any]) -> None:
+    done = int(snap.get("completed") or 0)
+    total = int(snap.get("total") or 0)
+    with st.container(border=True):
+        st.markdown("#### 执行摘要")
+        st.progress(done / total if total else 0.0,
+                    text=f"进度 {done}/{total} 部分")
+        for sec in snap.get("sections") or []:
+            stage = _STAGE_FALLBACK.get(str(sec.get("stage")), sec.get("stage"))
+            verdict = sec.get("verdict") or {}
+            unmet = [_DIM_LABELS.get(d, d)
+                     for d in (verdict.get("unmet_dimensions") or [])]
+            collab = sec.get("collaboration") or {}
+            bits = [f"{sec.get('content_chars') or 0} 字符"
+                    if sec.get("content_chars") else "尚无正文",
+                    f"阶段 {stage}"]
+            if verdict.get("decision"):
+                bits.append(f"判定 {verdict['decision']}")
+            if unmet:
+                bits.append("缺 " + "、".join(unmet))
+            if collab.get("summary"):
+                bits.append(f"协作：{collab['summary']}")
+            if sec.get("error"):
+                bits.append(f"⚠ {sec['error']}")
+            st.markdown(f"**{sec.get('heading')}**  \n" + " · ".join(map(str, bits)))
             c1, c2 = st.columns(2)
-            if c1.button("保存修改", key=f"save_{project_id}_{section_key}"):
-                ctx.service.polish_section(project_id, section_key, content)
-                st.success("已保存。")
-            if c2.button("润色当前章节", key=f"polish_{project_id}_{section_key}"):
-                polished = ctx.service.polish_section(project_id, section_key, content)
-                st.success("润色完成，可重新查看。")
+            with c1.popover("看正文", use_container_width=True):
+                content = ctx.service.section_content(pid, sec["section_key"])
+                st.markdown(content.get("content") or "_（本节尚未生成）_")
+            with c2.popover("决策轨迹", use_container_width=True):
+                trace = ctx.service.section_trace(pid, sec["section_key"])
+                rows = trace.get("trace") or trace.get("rounds") or []
+                if not rows:
+                    st.caption("暂无轨迹记录。")
+                for row in rows[:10]:
+                    st.markdown(f"- 第 {row.get('round', '?')} 轮："
+                                f"{row.get('decision') or row.get('status') or ''}"
+                                f"  \n  {str(row.get('reasons') or '')[:200]}")
+
+
+# ====================================================================== 派工
+def _directive(ctx, pid: Any, snap: dict[str, Any]) -> None:
+    """对节点下指令：自然语言 → 3 个方案 → 下单分发。"""
+    with st.container(border=True):
+        st.markdown("#### 对节点下指令")
+        st.caption("用你自己的话说明要补什么，**工作规划节点**会解析成"
+                   "「对哪些节点下什么单」并分发执行。")
+        text = st.text_input("指令",
+                             placeholder="例如：把库里未抽取的炔酰胺文献抽成知识",
+                             key="desk_direct_text")
+        if st.button("解析成方案（只解析，不执行）", key="desk_direct_parse"):
+            if not text.strip():
+                st.warning("先写下你要做什么")
+            else:
+                with st.spinner("规划节点正在解析…"):
+                    st.session_state["desk_plans"] = \
+                        ctx.service.parse_dispatch_request(
+                            text.strip(), project_id=pid,
+                            topic=(snap.get("intake") or {}).get("topic") or "",
+                            heading=(snap.get("question") or {}).get("heading") or "",
+                            verdict=(snap.get("question") or {}).get("verdict") or {})
+
+        plans = (st.session_state.get("desk_plans") or {}).get("plans") or []
+        if plans:
+            parsed = st.session_state.get("desk_plans") or {}
+            note = parsed.get("note")
+            st.caption("解析来源：" + ("模型" if parsed.get("parsed_by") == "llm"
+                                      else "确定性兜底")
+                       + (f" · {note}" if note else ""))
+            labels = {}
+            for plan in plans:
+                steps = " → ".join(f"{s.get('task')}@{s.get('node')}"
+                                   for s in plan.get("plan") or [])
+                labels[f"方案{plan.get('id')}：{plan.get('label')}"
+                       f"（{steps}）"] = plan
+            picked = st.radio("执行方案", list(labels), key="desk_plan_pick")
+            if st.button("下单执行", key="desk_dispatch"):
+                with st.spinner("派工执行中…"):
+                    st.session_state["desk_last_dispatch"] = \
+                        ctx.service.create_dispatch(
+                            labels[picked].get("plan") or [], project_id=pid,
+                            section_key=(snap.get("question")
+                                         or {}).get("section_key") or "",
+                            origin="user_direct", reason=text.strip())
+
+        record = st.session_state.get("desk_last_dispatch")
+        if record:
+            st.success(f"派工单 {record.get('dispatch_id')}：{record.get('status')}")
+            for step in record.get("steps") or []:
+                note = step.get("skip_reason") or step.get("error") or ""
+                st.markdown(f"- `{step.get('task')}`@{step.get('node')} → "
+                            f"{step.get('status')}"
+                            + (f"（{note}）" if note else ""))
+
+        runs = ctx.service.list_dispatches(project_id=pid, limit=5)
+        if runs:
+            with st.expander("最近的派工单", expanded=False):
+                for run in runs:
+                    st.markdown(f"**{run.get('dispatch_id')}** · {run.get('status')}"
+                                f" · {run.get('origin')}"
+                                f" · 新增 {run.get('added') or 0}")
+                    for step in run.get("steps") or []:
+                        st.caption(f"　{step.get('task')}@{step.get('node')} → "
+                                   f"{step.get('status')}")
