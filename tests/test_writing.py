@@ -12,7 +12,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from research_agent.db import connect, get_paper, upsert_paper  # noqa: E402
+from research_agent.db import (  # noqa: E402
+    connect, get_paper, upsert_paper, utcnow)
 from research_agent.writing import service as writing  # noqa: E402
 from tests._tmpdir import make_temp_dir  # noqa: E402
 
@@ -178,6 +179,76 @@ class WritingServiceTest(unittest.TestCase):
         ).fetchone()
         self.assertEqual(int(row["c"]), 0)
 
+    def test_delete_project_cleans_dispatch_runs_orphans(self):
+        """删除项目必须连派工单一起清掉。
+
+        `writing_sections` / `section_runs` 有 ``ON DELETE CASCADE``，但
+        **`dispatch_runs.project_id` 没有外键** —— 不显式清理就会留下孤儿，
+        而 `list_dispatches` 正是按 project_id 过滤的，会捞到已删项目的单子。
+        """
+        project_id = writing.create_project(self.conn, "带派工单的项目")
+        self.conn.execute(
+            "INSERT INTO dispatch_runs(dispatch_id, project_id, status, ts) "
+            "VALUES(?,?,?,?)", ("d-orphan", project_id, "done", utcnow()))
+        self.conn.commit()
+        removed = writing.delete_project(self.conn, project_id)
+        self.assertEqual(removed["dispatches"], 1)
+        left = self.conn.execute(
+            "SELECT COUNT(*) AS c FROM dispatch_runs WHERE project_id=?",
+            (project_id,)).fetchone()
+        self.assertEqual(int(left["c"]), 0)
+
+    def test_delete_project_reports_removed_counts(self):
+        """删除要如实回报清掉了什么（界面据此告诉用户删掉了几节）。"""
+        project_id = writing.create_project(self.conn, "待删统计")
+        removed = writing.delete_project(self.conn, project_id)
+        self.assertGreaterEqual(removed["sections"], 1)
+        self.assertIn("runs", removed)
+        self.assertIn("dispatches", removed)
+
+    def test_batch_delete_projects_skips_missing_ids(self):
+        """批量删除：不存在的 id 不报错，如实回报；去重，且不误删别的项目。"""
+        keep = writing.create_project(self.conn, "保留")
+        first = writing.create_project(self.conn, "删A")
+        second = writing.create_project(self.conn, "删B")
+        result = writing.batch_delete_projects(
+            self.conn, [first, second, 99999, first])
+        self.assertEqual(sorted(result["deleted"]), sorted([first, second]))
+        self.assertEqual(result["missing"], [99999])
+        self.assertIsNotNone(writing.get_project(self.conn, keep))
+        self.assertIsNone(writing.get_project(self.conn, first))
+
+    def test_rename_project_updates_only_given_fields(self):
+        project_id = writing.create_project(self.conn, "旧标题", "旧主题")
+        updated = writing.rename_project(self.conn, project_id,
+                                        title="新标题", topic="新主题")
+        self.assertEqual(updated["title"], "新标题")
+        self.assertEqual(updated["topic"], "新主题")
+        partial = writing.rename_project(self.conn, project_id, title="只改标题")
+        self.assertEqual(partial["title"], "只改标题")
+        self.assertEqual(partial["topic"], "新主题", "没给的字段不该被动")
+
+    def test_rename_project_rejects_empty_title(self):
+        """标题不能改成空——否则管理页会留下一条无法辨认的记录。"""
+        project_id = writing.create_project(self.conn, "有标题")
+        with self.assertRaises(ValueError):
+            writing.rename_project(self.conn, project_id, title="   ")
+        self.assertEqual(
+            writing.get_project(self.conn, project_id)["title"], "有标题")
+
+    def test_list_projects_carries_overview_fields(self):
+        """概况字段是"项目管理"的基础：已写/总节数 + 派工单数。"""
+        project_id = writing.create_project(self.conn, "概况")
+        self.conn.execute(
+            "INSERT INTO dispatch_runs(dispatch_id, project_id, status, ts) "
+            "VALUES(?,?,?,?)", ("d-ov", project_id, "done", utcnow()))
+        self.conn.commit()
+        row = [p for p in writing.list_projects(self.conn)
+               if p["project_id"] == project_id][0]
+        self.assertEqual(row["dispatch_count"], 1)
+        self.assertIn("filled_sections", row)
+        self.assertIn("total_sections", row)
+
     def test_list_projects_counts_filled_sections(self):
         project_id = writing.create_project(self.conn, "统计")
         writing.save_section(self.conn, project_id, "abstract", "摘要", "x")
@@ -264,6 +335,39 @@ class WritingApiTest(unittest.TestCase):
         for func in (self.api.project_detail, self.api.export_project):
             out = func(self.db_path, 99999)
             self.assertFalse(out["ok"])
+
+
+class ProjectDeleteGuardTest(unittest.TestCase):
+    """写作台删除保护：正在跑作业的项目不许删。
+
+    这是 desk 界面里的纯逻辑（`_blocked_by_running_job`），放在这里是因为它的
+    失败后果落在引擎的表上：作业落库时会往 `writing_sections` 写一行指向已删
+    项目的记录，撞外键约束 → 用户看到"写作失败"而不是"你删早了"。
+    """
+
+    def _guard(self):
+        from desk.ui.views.writing import _blocked_by_running_job
+        return _blocked_by_running_job
+
+    def test_no_running_job_deletes_everything(self):
+        keep, blocked = self._guard()([1, 2, 3], None)
+        self.assertEqual(keep, [1, 2, 3])
+        self.assertIsNone(blocked)
+
+    def test_running_project_is_removed_from_targets(self):
+        keep, blocked = self._guard()([1, 2, 3], 2)
+        self.assertEqual(keep, [1, 3])
+        self.assertEqual(blocked, 2)
+
+    def test_running_project_not_in_targets_does_not_block(self):
+        keep, blocked = self._guard()([1, 3], 2)
+        self.assertEqual(keep, [1, 3])
+        self.assertIsNone(blocked)
+
+    def test_only_running_project_leaves_nothing_to_delete(self):
+        keep, blocked = self._guard()([5], 5)
+        self.assertEqual(keep, [])
+        self.assertEqual(blocked, 5)
 
 
 class RouteWiringTest(unittest.TestCase):

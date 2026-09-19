@@ -28,6 +28,8 @@ __all__ = [
     "list_projects",
     "get_project",
     "delete_project",
+    "batch_delete_projects",
+    "rename_project",
     "generate_outline",
     "list_sections",
     "generate_section",
@@ -135,12 +137,19 @@ def create_project(conn: sqlite3.Connection, title: str, topic: str = "",
 
 
 def list_projects(conn: sqlite3.Connection) -> list[dict[str, Any]]:
+    """全部写作项目，附**概况**：已写/总节数、派工单数。
+
+    概况是"项目管理"的基础：27 个项目里只有 1 个写过正文时，光看标题根本分不出
+    哪些是测试残留、哪些是有内容的稿子。
+    """
     rows = conn.execute(
         "SELECT p.*, (SELECT COUNT(*) FROM writing_sections s "
         "  WHERE s.project_id = p.project_id AND LENGTH(TRIM(s.content)) > 0) "
         "  AS filled_sections, "
         " (SELECT COUNT(*) FROM writing_sections s WHERE s.project_id = p.project_id) "
-        "  AS total_sections "
+        "  AS total_sections, "
+        " (SELECT COUNT(*) FROM dispatch_runs d WHERE d.project_id = p.project_id) "
+        "  AS dispatch_count "
         "FROM writing_projects p ORDER BY p.project_id DESC"
     ).fetchall()
     return [_row_to_project(r) for r in rows]
@@ -154,9 +163,107 @@ def get_project(conn: sqlite3.Connection,
     return _row_to_project(row) if row else None
 
 
-def delete_project(conn: sqlite3.Connection, project_id: int) -> None:
-    conn.execute("DELETE FROM writing_projects WHERE project_id=?", (int(project_id),))
+def _project_children(conn: sqlite3.Connection,
+                      project_id: int) -> dict[str, int]:
+    """项目名下的产物行数（用于删除前后对账与回报）。"""
+
+    def count(sql: str) -> int:
+        try:
+            row = conn.execute(sql, (int(project_id),)).fetchone()
+        except sqlite3.Error:
+            return 0
+        return int(row[0] or 0) if row else 0
+
+    return {
+        "sections": count(
+            "SELECT COUNT(*) FROM writing_sections WHERE project_id=?"),
+        "runs": count("SELECT COUNT(*) FROM section_runs WHERE project_id=?"),
+        "dispatches": count(
+            "SELECT COUNT(*) FROM dispatch_runs WHERE project_id=?"),
+    }
+
+
+def delete_project(conn: sqlite3.Connection,
+                   project_id: int) -> dict[str, int]:
+    """删除项目**及其全部产物**，返回被清掉的行数。
+
+    `writing_sections` / `section_runs` 声明了 ``ON DELETE CASCADE``，而
+    `connect()` 开了 ``PRAGMA foreign_keys=ON``，所以它们随主表自动清理。
+
+    但 **`dispatch_runs.project_id` 没有外键**（见 db.py 的建表语句）——不显式
+    清理就会留下孤儿派工单：日后按 project_id 查派工记录会捞到已删项目的单子，
+    而 `list_dispatches` 也是按 project_id 过滤的。这里显式删掉并如实回报。
+    """
+    pid = int(project_id)
+    before = _project_children(conn, pid)
+    conn.execute("DELETE FROM dispatch_runs WHERE project_id=?", (pid,))
+    conn.execute("DELETE FROM writing_projects WHERE project_id=?", (pid,))
     conn.commit()
+    after = _project_children(conn, pid)
+    return {key: before[key] - after.get(key, 0) for key in before}
+
+
+def batch_delete_projects(conn: sqlite3.Connection,
+                          project_ids: Any) -> dict[str, Any]:
+    """批量删除；返回 ``{deleted, missing, removed:{...}}``。
+
+    不存在的 id **不报错**——界面上列表可能已被别人改过，逐个删并如实回报
+    比整体失败更符合"清理残留"的用法。
+    """
+    deleted: list[int] = []
+    missing: list[int] = []
+    removed = {"sections": 0, "runs": 0, "dispatches": 0}
+    seen: set[int] = set()
+    for raw in (project_ids or []):
+        try:
+            pid = int(raw)
+        except (TypeError, ValueError):
+            continue
+        if pid in seen:
+            continue
+        seen.add(pid)
+        if get_project(conn, pid) is None:
+            missing.append(pid)
+            continue
+        counts = delete_project(conn, pid)
+        deleted.append(pid)
+        for key in removed:
+            removed[key] += int(counts.get(key) or 0)
+    return {"deleted": deleted, "missing": missing, "removed": removed}
+
+
+def rename_project(conn: sqlite3.Connection, project_id: int,
+                   title: str | None = None,
+                   topic: str | None = None) -> dict[str, Any]:
+    """重命名项目（标题与主题分开给，``None`` 表示不动）。
+
+    标题沿用 `create_project` 的约束：**不能改成空**——否则项目管理页会留下一条
+    无法辨认的记录。
+    """
+    pid = int(project_id)
+    project = get_project(conn, pid)
+    if not project:
+        raise ValueError(f"写作项目不存在: {pid}")
+    sets: list[str] = []
+    params: list[Any] = []
+    if title is not None:
+        clean = str(title).strip()
+        if not clean:
+            raise ValueError("项目标题不能为空")
+        sets.append("title=?")
+        params.append(clean)
+    if topic is not None:
+        sets.append("topic=?")
+        params.append(str(topic).strip())
+    if not sets:
+        return project
+    sets.append("updated_at=?")
+    params.append(utcnow())
+    params.append(pid)
+    conn.execute(f"UPDATE writing_projects SET {', '.join(sets)} "
+                 f"WHERE project_id=?", params)
+    conn.commit()
+    return get_project(conn, pid) or project
 
 
 def list_sections(conn: sqlite3.Connection,

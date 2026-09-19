@@ -763,6 +763,47 @@ class BackendAdapter:
         finally:
             conn.close()
 
+    # -- 项目管理：重命名 / 删除（写作台「项目管理」区）------------------------
+    def rename_writing_project(self, project_id: Any, *,
+                               title: str | None = None,
+                               topic: str | None = None) -> dict[str, Any]:
+        """重命名项目（``None`` 表示该项不动）。"""
+        from research_agent.writing import service as wsvc
+
+        conn = self._conn()
+        try:
+            project = wsvc.rename_project(conn, int(project_id),
+                                          title=title, topic=topic)
+            return self._project_row(project)
+        finally:
+            conn.close()
+
+    def delete_writing_project(self, project_id: Any) -> dict[str, Any]:
+        """删除项目及其产物，返回被清掉的行数（供界面如实回报）。"""
+        from research_agent.writing import service as wsvc
+
+        conn = self._conn()
+        try:
+            removed = wsvc.delete_project(conn, int(project_id))
+            return {"ok": True, "project_id": int(project_id),
+                    "removed": removed}
+        finally:
+            conn.close()
+
+    def batch_delete_writing_projects(self,
+                                      project_ids: Iterable[Any]
+                                      ) -> dict[str, Any]:
+        """批量删除；不存在的 id 不报错，如实回报。"""
+        from research_agent.writing import service as wsvc
+
+        conn = self._conn()
+        try:
+            result = wsvc.batch_delete_projects(conn, list(project_ids or []))
+            result["ok"] = True
+            return result
+        finally:
+            conn.close()
+
     def generate_outline(self, project_id: Any,
                          topic: str) -> list[dict[str, Any]]:
         """生成大纲：引擎的 `generate_outline`（走写作技能包的体裁骨架）。"""
@@ -1094,6 +1135,11 @@ class BackendAdapter:
             "genre": row.get("genre") or "",
             "status": row.get("status") or "",
             "updated_at": row.get("updated_at"),
+            # 概况：项目管理页靠这几项分辨"有内容的稿子"与"测试残留"
+            "created_at": row.get("created_at"),
+            "filled_sections": int(row.get("filled_sections") or 0),
+            "total_sections": int(row.get("total_sections") or 0),
+            "dispatch_count": int(row.get("dispatch_count") or 0),
         }
 
     def _section_row(self, row: dict[str, Any]) -> dict[str, Any]:

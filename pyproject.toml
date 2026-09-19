@@ -1,6 +1,6 @@
 [project]
 name = "research-desk"
-version = "0.1.2"
+version = "0.1.3"
 description = "research-desk：PWA 可视化界面（Streamlit）× trial 研究引擎（LangGraph 多模型编排、科研检索、PDF 解析、动态本体）"
 readme = "README.md"
 requires-python = ">=3.12"

@@ -52,6 +52,8 @@ def render(ctx) -> None:
                "写作由知识消费与内容形成节点完成。")
 
     project = _pick_project(ctx)
+    # 管理区**先于提前返回**渲染：选中态失效（项目刚被删）时，用户正是在这里清理
+    _project_manager(ctx)
     if not project:
         return
     pid = project["id"]
@@ -106,6 +108,123 @@ def _pick_project(ctx) -> dict[str, Any] | None:
     st.warning("选中的项目已不存在，请重新选择。")
     st.session_state.pop("desk_pid", None)
     return None
+
+
+# ================================================================== 项目管理
+def _blocked_by_running_job(chosen_ids: list[Any], running_pid: Any
+                            ) -> tuple[list[Any], Any]:
+    """从待删列表里摘掉"正在跑写作作业"的项目。
+
+    不摘的后果很具体：作业跑到落库那一步会往 `writing_sections` 写一行
+    `project_id` 指向**已删项目**的记录，撞外键约束直接失败——用户看到的是
+    "写作失败"，而不是"你删早了"。所以宁可拒绝并说清楚。
+
+    返回 ``(可删列表, 被挡下的 id 或 None)``。抽成纯函数是为了能被确定性地
+    单测：在界面里伪造一个在跑的作业会牵动 `st.rerun`，测不稳。
+    """
+    if running_pid is None:
+        return list(chosen_ids), None
+    blocked = running_pid if running_pid in chosen_ids else None
+    return [i for i in chosen_ids if i != running_pid], blocked
+
+
+def _project_manager(ctx) -> None:
+    """项目管理：看概况 → 重命名 → 删除（单个 / 批量，二次确认）。
+
+    为什么要"概况"：实测真实库 27 个项目里只有 1 个写过正文，其余是历史冒烟残留
+    （`aaa`、`浏览器冒烟`、`probe-*`）。只给标题根本分不出哪条能删——所以这里把
+    **已写节数 / 更新时间**摆出来，让"不用的项目"一眼可辨。
+    """
+    projects = ctx.service.list_writing_projects()
+    with st.expander(f"项目管理（重命名 / 删除）· 共 {len(projects)} 个项目",
+                     expanded=False):
+        if not projects:
+            st.caption("还没有写作项目。")
+            return
+
+        by_id = {p["id"]: p for p in projects}
+        st.dataframe(
+            [{
+                "项目": f"#{p['id']}",
+                "标题": p["title"] or "（无标题）",
+                "体裁": p["genre"] or "",
+                "已写/总节": f"{p.get('filled_sections') or 0}/"
+                             f"{p.get('total_sections') or 0}",
+                "主题": (p.get("topic") or "")[:40],
+                "更新时间": str(p.get("updated_at")
+                                or p.get("created_at") or "")[:19],
+            } for p in projects],
+            width="stretch", hide_index=True,
+        )
+        st.caption("「已写/总节」为 0/N 的项目通常是创建后没写过的，可优先清理。")
+
+        # ---------------------------------------------------------- 重命名
+        st.markdown("##### 重命名")
+        labels = {f"#{p['id']} · {p['title'] or '（无标题）'}": p["id"]
+                  for p in projects}
+        picked = st.selectbox("要改的项目", list(labels), key="desk_pm_rename_pick")
+        target = by_id.get(labels[picked]) or {}
+        # key 里带 pid：换项目时拿到与该项目绑定的输入框，默认值才是它自己的现值
+        c1, c2 = st.columns(2)
+        new_title = c1.text_input("标题", value=str(target.get("title") or ""),
+                                  key=f"desk_pm_title_{target.get('id')}")
+        new_topic = c2.text_input("主题", value=str(target.get("topic") or ""),
+                                  key=f"desk_pm_topic_{target.get('id')}")
+        if st.button("保存修改", key="desk_pm_rename"):
+            if not str(new_title).strip():
+                st.warning("标题不能为空")
+            else:
+                ctx.service.rename_writing_project(
+                    target.get("id"), title=new_title, topic=new_topic)
+                st.success(f"已更新 #{target.get('id')}")
+                st.rerun()
+
+        # ---------------------------------------------------------- 删除
+        st.markdown("##### 删除")
+        victims = st.multiselect(
+            "要删除的项目（可多选）", list(labels), key="desk_pm_victims")
+        chosen_ids = [labels[v] for v in victims]
+        if chosen_ids:
+            picked_projects = [by_id[i] for i in chosen_ids if i in by_id]
+            lost_sections = sum(int(p.get("total_sections") or 0)
+                                for p in picked_projects)
+            lost_written = sum(int(p.get("filled_sections") or 0)
+                               for p in picked_projects)
+            st.warning(
+                f"将删除 {len(chosen_ids)} 个项目，连同其大纲 {lost_sections} 节"
+                f"（其中已写正文 {lost_written} 节）、决策轨迹与派工单记录。"
+                "**此操作不可恢复**。")
+            if lost_written:
+                st.error(f"注意：所选项目里有 {lost_written} 节**已写好的正文**"
+                         "会被一并删除。如要留档，先到导出功能存一份。")
+
+        # 正在跑的作业属于哪个项目：删它会让作业写到一半撞外键失败，先说清楚
+        running = (st.session_state.get("desk_pid")
+                   if st.session_state.get("desk_job") else None)
+        chosen_ids, blocked = _blocked_by_running_job(chosen_ids, running)
+        if blocked is not None:
+            st.error(f"#{blocked} 有正在跑的写作作业：请先「停止这一步」"
+                     "或等它结束，再删除该项目。")
+
+        confirmed = st.checkbox("我确认删除以上项目（不可恢复）",
+                                key="desk_pm_confirm")
+        if st.button("删除选中项目", key="desk_pm_delete",
+                     disabled=not (chosen_ids and confirmed)):
+            result = ctx.service.batch_delete_writing_projects(chosen_ids)
+            removed = result.get("removed") or {}
+            st.success(
+                f"已删除 {len(result.get('deleted') or [])} 个项目："
+                f"大纲 {removed.get('sections', 0)} 节、"
+                f"决策轨迹 {removed.get('runs', 0)} 行、"
+                f"派工单 {removed.get('dispatches', 0)} 条。")
+            if result.get("missing"):
+                st.info(f"另有 {len(result['missing'])} 个 id 已不存在，跳过。")
+            # 选中的项目可能已被删掉：清掉选中态，否则下一轮会指向已删的 id
+            if st.session_state.get("desk_pid") in set(chosen_ids):
+                st.session_state.pop("desk_pid", None)
+            st.session_state.pop("desk_project_pick", None)
+            st.session_state.pop("desk_pm_victims", None)
+            st.rerun()
 
 
 # ====================================================================== 推进
