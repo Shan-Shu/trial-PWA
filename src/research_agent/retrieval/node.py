@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import hashlib
+import html
 import logging
 import re
 import sqlite3
@@ -31,9 +32,117 @@ from research_agent.retrieval.skills import (
 
 logger = logging.getLogger(__name__)
 
+#: 标题归一化用（判重时抹平来源间的书写差异）
+_HTML_TAG_RE = re.compile(r"<[^>]+>")
+_WS_RE = re.compile(r"\s+")
+# 连字符/斜杠等是**词分隔符**，必须换成空格而不是删掉：
+# 删掉会把 "Pd-catalyzed" 变成 "pdcatalyzed"，与 "Pd catalyzed" 匹配不上，
+# 而这两个写法在真实来源里都出现过（实测踩到）。
+_TITLE_SEP_TABLE = str.maketrans({c: " " for c in "-–—‑/\\_+|~"})
+# 真标点直接删除
+_TITLE_PUNCT_TABLE = str.maketrans("", "", ".,;:!?'\"`()[]{}<>*#&@$%^=")
+
 
 def _sha256(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
+
+
+def _normalize_title(text: Any) -> str:
+    """标题归一化，用于跨来源判重。
+
+    同一篇文献从不同源回来的标题会有三种差异，必须都抹平再比：
+    1. HTML 实体与标签（实测常见：``&lt;i&gt;N&lt;/i&gt;-Mesyl``，两侧来源都可能带）；
+    2. 标点与连字符（``Pd-catalyzed`` / ``Pd catalyzed``）；
+    3. 空白与大小写。
+    """
+    raw = html.unescape(str(text or ""))
+    raw = _HTML_TAG_RE.sub(" ", raw)
+    raw = raw.lower().translate(_TITLE_SEP_TABLE).translate(_TITLE_PUNCT_TABLE)
+    return _WS_RE.sub(" ", raw).strip()
+
+
+def _normalize_doi(value: Any) -> str:
+    """DOI 归一化：去掉 URL/``doi:`` 前缀与大小写差异，否则同一个 DOI 会被当成两个。"""
+    text = str(value or "").strip().lower()
+    for prefix in ("https://doi.org/", "http://doi.org/",
+                   "https://dx.doi.org/", "http://dx.doi.org/", "doi:"):
+        if text.startswith(prefix):
+            text = text[len(prefix):]
+    return text.strip()
+
+
+def library_identity_index(conn: sqlite3.Connection) -> dict[str, set[str]]:
+    """库内已有文献的标识集合（``paper_key`` / DOI / 归一化标题）。
+
+    一次读全表再在内存里比对：单次补检只建一次，而逐条 SQL 查标题需要全表扫，
+    反而更慢。跨来源判重必须靠 DOI 与标题——``paper_key`` 里带来源前缀
+    （``europepmc:MED:x`` 与 ``openalex:Wx`` 可能是同一篇）。
+    """
+    keys: set[str] = set()
+    dois: set[str] = set()
+    titles: set[str] = set()
+    try:
+        rows = conn.execute("SELECT paper_key, doi, title FROM papers")
+    except sqlite3.Error:
+        return {"keys": keys, "dois": dois, "titles": titles}
+    for row in rows:
+        try:
+            key = str(row["paper_key"] or "").strip()
+            doi = _normalize_doi(row["doi"])
+            title = _normalize_title(row["title"])
+        except (IndexError, KeyError, TypeError):
+            key = str(row[0] or "").strip()
+            doi = _normalize_doi(row[1])
+            title = _normalize_title(row[2])
+        if key:
+            keys.add(key)
+        if doi:
+            dois.add(doi)
+        if title:
+            titles.add(title)
+    return {"keys": keys, "dois": dois, "titles": titles}
+
+
+def duplicate_reason(index: dict[str, set[str]],
+                     record: dict[str, Any]) -> str:
+    """该候选是否已在库里；返回命中原因（``paper_key`` / ``doi`` / ``title``）或 ``""``。
+
+    顺序即可信度：``paper_key`` 完全相同最硬，DOI 次之（跨来源同一篇），
+    归一化标题最后。标题只做**完全相等**比对——用前缀或模糊匹配会把同主题的
+    不同文献误判成重复，那比多抓一篇的代价大得多。
+    """
+    key = str(record.get("paper_key") or "").strip()
+    if key and key in index.get("keys", ()):
+        return "paper_key"
+    doi = _normalize_doi(record.get("doi"))
+    if doi and doi in index.get("dois", ()):
+        return "doi"
+    title = _normalize_title(record.get("title"))
+    if title and title in index.get("titles", ()):
+        return "title"
+    return ""
+
+
+def split_library_duplicates(conn: sqlite3.Connection,
+                             records: list[dict[str, Any]]
+                             ) -> tuple[list[dict[str, Any]],
+                                        list[dict[str, Any]]]:
+    """把候选拆成 ``(库里没有的, 库里已有的)``；后者带上 ``_duplicate_by``。
+
+    去重必须发生在 ``_process_records`` **之前**：那一步每篇都要调模型清洗元数据、
+    下载 PDF、解析、入库，随后 ``process_papers`` 还要再吃质量评估与知识抽取的
+    调用。重复文献走完这一整套就是纯烧配额。
+    """
+    index = library_identity_index(conn)
+    fresh: list[dict[str, Any]] = []
+    dupes: list[dict[str, Any]] = []
+    for rec in records:
+        reason = duplicate_reason(index, rec)
+        if reason:
+            dupes.append({**rec, "_duplicate_by": reason})
+        else:
+            fresh.append(rec)
+    return fresh, dupes
 
 
 def _process_records(
@@ -270,6 +379,12 @@ def ingest_search_results(
             reason = rec.pop("_gate_low_signal", None)
             if reason:
                 low_signals[reason] = low_signals.get(reason, 0) + 1
+        # **库内去重**：放在硬门之后、`_process_records` 之前——这一步每篇都要
+        # 调模型清洗元数据、下载 PDF、解析、入库，之后还要吃质量评估与知识抽取。
+        # 实测一次补检 21 篇里 19 篇库里本来就有，全跑一遍纯属烧配额。
+        duplicates: list[dict[str, Any]] = []
+        if bool(getattr(settings, "retrieval_skip_existing", True)):
+            records, duplicates = split_library_duplicates(conn, records)
         out = _process_records(
             records,
             retriever=retriever,
@@ -299,6 +414,25 @@ def ingest_search_results(
             log_event(conn, "retrieval",
                       "relevance-gate-dropped" if dropped else "relevance-gate-low-signal",
                       None, gate_report)
+        if duplicates:
+            by_reason: dict[str, int] = {}
+            for rec in duplicates:
+                reason = str(rec.get("_duplicate_by") or "?")
+                by_reason[reason] = by_reason.get(reason, 0) + 1
+            dup_report = {
+                "skipped": len(duplicates),
+                "by": by_reason,
+                "topics": queries[:6],
+                "examples": [
+                    {"paper_key": r.get("paper_key"), "title": r.get("title"),
+                     "matched_by": r.get("_duplicate_by")}
+                    for r in duplicates[:5]
+                ],
+                "note": ("这些文献库里已有，已跳过「清洗元数据 → 下载 PDF → 入库」"
+                         "与后续质量评估/知识抽取，不再重复消耗配额"),
+            }
+            out["duplicates"] = dup_report
+            log_event(conn, "retrieval", "duplicates-skipped", None, dup_report)
         return out
     finally:
         if own_conn:

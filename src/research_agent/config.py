@@ -117,6 +117,13 @@ class Settings:
     #   "drop" = 沿用旧行为（整批丢弃）
     relevance_gate_low_signal: str = "warn"
 
+    # 补检去重（v0.1.6）：检索候选在入库前先与库内已有文献比对
+    # （paper_key / DOI / 归一化标题），命中即跳过整条处理链。
+    # 为什么默认开：实测一次补检抓回 21 篇，其中 **19 篇库里本来就有** ——
+    # 重复文献仍会走"LLM 清洗元数据 → 下载 PDF → 解析 → 入库"，之后还要再吃
+    # 质量评估与知识抽取的模型调用，配额基本白烧。
+    retrieval_skip_existing: bool = True
+
     # ---------- 章节级工作流（写作台 → 工作规划节点）----------
     # 充分性判定：confidence ≥ 阈值 → 直接消费+生成；否则补检；预算用尽 → 明确失败
     section_sufficiency_threshold: float = 0.62
@@ -188,6 +195,8 @@ class Settings:
         gate = os.getenv("RA_RELEVANCE_GATE_LOW_SIGNAL")
         if gate and gate.strip().lower() in ("warn", "drop"):
             s.relevance_gate_low_signal = gate.strip().lower()
+        s.retrieval_skip_existing = _env_bool(
+            "RA_RETRIEVAL_SKIP_EXISTING", s.retrieval_skip_existing)
         s.q_flag_penalty = _env_float("RA_Q_FLAG_PENALTY", s.q_flag_penalty)
         s.max_extract_chars = int(
             os.getenv("RA_MAX_EXTRACT_CHARS", s.max_extract_chars))

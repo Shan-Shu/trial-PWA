@@ -45,6 +45,7 @@ def collect_mission(request: dict[str, Any],
     collected: list[str] = []
     errors: list[dict[str, Any]] = []
     dropped: list[dict[str, Any]] = []
+    duplicates: list[dict[str, Any]] = []
     for term in terms[:max_topics]:
         fixed_queries: list[str] | None = None
         if evidence_mode:
@@ -68,7 +69,11 @@ def collect_mission(request: dict[str, Any],
             gate = (out.get("ingest") or {}).get("relevance_gate")
             if gate:
                 dropped.append({"term": term, **gate})
-            logger.info("collect topic=%s papers=%d", term, len(keys))
+            dup = (out.get("ingest") or {}).get("duplicates")
+            if dup:
+                duplicates.append({"term": term, **dup})
+            logger.info("collect topic=%s papers=%d duplicates_skipped=%d",
+                        term, len(keys), int((dup or {}).get("skipped") or 0))
         except Exception as exc:  # noqa: BLE001
             logger.warning("collect topic %s failed: %s", term, exc)
             errors.append({"term": term, "error": str(exc)})
@@ -77,4 +82,8 @@ def collect_mission(request: dict[str, Any],
         "paper_keys": collected,
         "errors": errors,
         "relevance_gate": dropped,
+        # 库内已有的候选：**如实回报**，否则用户看到"新增 0"会以为是检索失败
+        "duplicates_skipped": sum(int(d.get("skipped") or 0)
+                                  for d in duplicates),
+        "duplicates": duplicates,
     }

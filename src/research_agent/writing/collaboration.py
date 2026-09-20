@@ -164,7 +164,12 @@ def run_collaboration(
             if item.get("note"):
                 extract_note = str(item["note"])
 
+    # 库内已有的候选总数：新增 0 时靠它区分"没抓到"与"库里都有"
+    duplicates_total = sum(int(s.get("duplicates_skipped") or 0)
+                           for s in steps)
     summary_bits = [f"检索 {rounds_done} 轮", f"新增 {added_total} 篇"]
+    if duplicates_total:
+        summary_bits.append(f"跳过库内已有 {duplicates_total} 篇")
     if "extract_knowledge" in tasks:
         # 抽取数**必须无条件下报**：为 0 时也要让用户看见，
         # 否则"补检了但没抽"这件事在界面上完全不可见（实测就是这样漏掉的）。
@@ -172,7 +177,11 @@ def run_collaboration(
         if extracted_total == 0 and extract_note:
             summary_bits.append(f"（{extract_note}）")
     if exhausted:
-        summary_bits.append("连续无新增，已提前停止")
+        # 停下来的原因是"抓到的库里全有"还是"压根没抓到"，说法必须不同
+        if duplicates_total and not added_total:
+            summary_bits.append("候选均为库内已有，已停止（未重复下载与评估）")
+        else:
+            summary_bits.append("连续无新增，已提前停止")
     _progress(progress_cb, 90.0, "、".join(summary_bits))
 
     return {
@@ -181,6 +190,7 @@ def run_collaboration(
         "rounds_done": rounds_done,
         "added": added_total,
         "extracted": extracted_total,
+        "duplicates_skipped": duplicates_total,
         "queries": queries[:6],
         "tasks": tasks,
         # 实际用的抽取范围：普通补检时由 `_preferred_extract_scope` 决定，
@@ -280,10 +290,14 @@ def _do_retrieve(conn: sqlite3.Connection, *, section_key: str,
             break
         count = int(report.get("count") or 0)
         keys = list(report.get("paper_keys") or [])
+        dupes = int(report.get("duplicates_skipped") or 0)
         added_total += count
         rounds_done += 1
         steps.append({"round": index, "task": "retrieve", "ok": True,
                       "count": count, "paper_keys": keys[:50],
+                      # 库内已有、被跳过的候选数：**新增 0 有两种成因**，
+                      # 必须分开报，否则用户分不清"检索没抓到"与"抓到的库里都有"
+                      "duplicates_skipped": dupes,
                       "errors": list(report.get("errors") or [])[:5]})
         if count == 0:
             zero_streak += 1
