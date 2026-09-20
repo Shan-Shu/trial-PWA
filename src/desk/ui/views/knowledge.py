@@ -77,7 +77,7 @@ def render(ctx) -> None:
                 }
                 for e in data["entities"]
             ]
-            st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+            st.dataframe(pd.DataFrame(rows), width="stretch", hide_index=True)
 
     if data["triples"]:
         with st.expander("抽取三元组", expanded=False):
@@ -91,4 +91,4 @@ def render(ctx) -> None:
                 }
                 for t in data["triples"]
             ]
-            st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+            st.dataframe(pd.DataFrame(rows), width="stretch", hide_index=True)

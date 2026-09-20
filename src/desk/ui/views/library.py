@@ -119,7 +119,7 @@ def _render_manage(ctx, rows) -> None:
 
     with st.expander("文献列表", expanded=True):
         df = paper_dataframe(rows)
-        st.dataframe(df, use_container_width=True, hide_index=True)
+        st.dataframe(df, width="stretch", hide_index=True)
         st.caption(f"当前显示 {len(rows)} 篇文献")
 
 
@@ -277,7 +277,7 @@ def _render_knowledge_panel(ctx, paper_id: int) -> None:
             }
             for e in data["entities"]
         ]
-        st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+        st.dataframe(pd.DataFrame(rows), width="stretch", hide_index=True)
 
     if data["triples"]:
         st.markdown("#### 关系 / 属性 / 事件")
@@ -291,7 +291,7 @@ def _render_knowledge_panel(ctx, paper_id: int) -> None:
             }
             for t in data["triples"]
         ]
-        st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+        st.dataframe(pd.DataFrame(rows), width="stretch", hide_index=True)
 
 
 def _render_material_panel(paper) -> None:
@@ -330,7 +330,7 @@ def _render_status(ctx, rows, row_by_id) -> None:
                 "三元组数": processing["triple_count"] if processing else 0,
             }
         )
-    st.dataframe(pd.DataFrame(data_rows), use_container_width=True, hide_index=True)
+    st.dataframe(pd.DataFrame(data_rows), width="stretch", hide_index=True)
 
 
 def _status_label(status: str) -> str:

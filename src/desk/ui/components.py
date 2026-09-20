@@ -92,7 +92,7 @@ def render_paper_list(rows: list[dict[str, Any]]) -> None:
         return
 
     df = paper_dataframe(rows)
-    st.dataframe(df, use_container_width=True, hide_index=True)
+    st.dataframe(df, width="stretch", hide_index=True)
 
     options = {f"#{r.get('id')} · {r.get('title') or '未命名文献'}": r for r in rows}
     selected_label = st.selectbox("选择文献查看详情", list(options))

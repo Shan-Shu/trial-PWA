@@ -54,7 +54,7 @@ def render(ctx) -> None:
             }
             for item in items
         ]
-        st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+        st.dataframe(pd.DataFrame(rows), width="stretch", hide_index=True)
 
         aggregation = ctx.service.aggregate_search_results(items)
         if aggregation:
@@ -81,7 +81,7 @@ def render(ctx) -> None:
                             for r in related
                         ]
                     ),
-                    use_container_width=True,
+                    width="stretch",
                     hide_index=True,
                 )
             else:

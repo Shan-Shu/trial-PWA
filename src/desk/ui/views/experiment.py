@@ -61,7 +61,7 @@ def render(ctx) -> None:
                 }
                 for k in knowledge
             ]
-            st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+            st.dataframe(pd.DataFrame(rows), width="stretch", hide_index=True)
         else:
             st.info("暂无实验知识，请先完成知识抽取和实验知识聚合。")
 

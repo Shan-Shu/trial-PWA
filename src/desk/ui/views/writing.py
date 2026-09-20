@@ -431,7 +431,7 @@ def _intake(ctx, pid: Any, question: dict[str, Any]) -> None:
             if cols[index % 2].button(
                     f"{label}{suffix} · {option.get('sections')} 节",
                     key=f"desk_genre_{option.get('id')}",
-                    use_container_width=True):
+                    width="stretch"):
                 _answer(ctx, pid, {"kind": "intake", "step": "genre",
                                    "value": option.get("id")})
         return
@@ -510,7 +510,7 @@ def _section_choice(ctx, pid: Any, question: dict[str, Any]) -> None:
         _answer(ctx, pid, {"kind": "section_choice",
                            "section_key": question.get("section_key"),
                            "choice": "ai"})
-    with c2.popover("我自己写", use_container_width=True):
+    with c2.popover("我自己写", width="stretch"):
         text = st.text_area("写好的内容", key="desk_self_text", height=160)
         if st.button("提交我写的内容", key="desk_self_ok"):
             if not text.strip():
@@ -604,7 +604,7 @@ def _custom_plan(ctx, pid: Any, question: dict[str, Any]) -> None:
         _answer(ctx, pid, {"kind": "custom_plan",
                            "section_key": question.get("section_key"),
                            "choice": "ai"})
-    with c2.popover("我再明确一点", use_container_width=True):
+    with c2.popover("我再明确一点", width="stretch"):
         text = st.text_area("补充说明", key="desk_refine_text", height=120)
         if st.button("按补充说明重新解析", key="desk_refine_ok"):
             if not text.strip():
@@ -642,10 +642,10 @@ def _sections(ctx, pid: Any, snap: dict[str, Any]) -> None:
                 bits.append(f"⚠ {sec['error']}")
             st.markdown(f"**{sec.get('heading')}**  \n" + " · ".join(map(str, bits)))
             c1, c2 = st.columns(2)
-            with c1.popover("看正文", use_container_width=True):
+            with c1.popover("看正文", width="stretch"):
                 content = ctx.service.section_content(pid, sec["section_key"])
                 st.markdown(content.get("content") or "_（本节尚未生成）_")
-            with c2.popover("决策轨迹", use_container_width=True):
+            with c2.popover("决策轨迹", width="stretch"):
                 trace = ctx.service.section_trace(pid, sec["section_key"])
                 rows = trace.get("trace") or trace.get("rounds") or []
                 if not rows:

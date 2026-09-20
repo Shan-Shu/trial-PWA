@@ -48,7 +48,7 @@ def render(ctx) -> None:
                 }
                 for t in terms
             ]
-            st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+            st.dataframe(pd.DataFrame(rows), width="stretch", hide_index=True)
 
     if relations:
         with st.expander("本体关系", expanded=False):
@@ -62,4 +62,4 @@ def render(ctx) -> None:
                 }
                 for r in relations
             ]
-            st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+            st.dataframe(pd.DataFrame(rows), width="stretch", hide_index=True)
