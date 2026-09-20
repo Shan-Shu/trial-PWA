@@ -57,7 +57,8 @@ class PlainCollectIncludesExtractionTest(unittest.TestCase):
         configure(path=None, to_stderr=False)
         self.tmp.cleanup()
 
-    def _run(self, section, *, retrieved=116, extracted=7, extract_note=""):
+    def _run(self, section, *, retrieved=116, extracted=7, extract_note="",
+             duplicates=0, exhausted=False):
         """用假执行体跑 run_collaboration，只看"决定做什么"。"""
         calls: dict = {}
 
@@ -65,10 +66,12 @@ class PlainCollectIncludesExtractionTest(unittest.TestCase):
                           settings, progress_cb):
             calls["retrieve"] = {"queries": list(queries),
                                  "rounds_cap": rounds_cap}
-            steps = [{"round": 1, "task": "retrieve", "ok": True,
-                      "count": retrieved,
-                      "paper_keys": [f"p{i}" for i in range(retrieved)]}]
-            return retrieved, 1, steps, False
+            step = {"round": 1, "task": "retrieve", "ok": True,
+                    "count": retrieved,
+                    "paper_keys": [f"p{i}" for i in range(retrieved)]}
+            if duplicates:
+                step["duplicates_skipped"] = duplicates
+            return retrieved, 1, [step], exhausted
 
         def fake_extract(conn, *, scope, project, section_key, added_keys,
                          settings, progress_cb):
@@ -123,6 +126,27 @@ class PlainCollectIncludesExtractionTest(unittest.TestCase):
         section = FakeSection()
         report, _ = self._run(section)
         self.assertIn(report["extract_scope"], ("new", "existing", "both"))
+
+    def test_duplicates_are_reported_in_summary(self):
+        """库里已有而跳过的候选必须说出来。
+
+        实测一次补检抓回 21 篇、19 篇库里本来就有。若只报「新增 0 篇」，用户
+        会以为检索失败；必须让他看到"抓到了，但都是已有的，没重复下载/评估"。
+        """
+        section = FakeSection()
+        report, _ = self._run(section, retrieved=0, duplicates=19,
+                              exhausted=True)
+        self.assertEqual(report["duplicates_skipped"], 19)
+        self.assertIn("跳过库内已有 19 篇", report["summary"])
+        self.assertIn("候选均为库内已有", report["summary"])
+
+    def test_zero_new_without_duplicates_says_not_found(self):
+        """另一种"新增 0"（压根没抓到）不能被说成"库里都有"。"""
+        section = FakeSection()
+        report, _ = self._run(section, retrieved=0, duplicates=0, exhausted=True)
+        self.assertEqual(report["duplicates_skipped"], 0)
+        self.assertNotIn("跳过库内已有", report["summary"])
+        self.assertIn("连续无新增", report["summary"])
 
 
 class ExtractScopeTest(unittest.TestCase):
